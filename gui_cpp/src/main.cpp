@@ -15,6 +15,7 @@
 #include "ui/dockhost.hpp"
 #include "ui/file_dialogs.hpp"
 #include "ui/settings.hpp"
+#include "ui/sidecar.hpp"
 #include "workspaces/workspaces.hpp"
 
 #include <imgui.h>
@@ -580,6 +581,10 @@ int main() {
     }
 
     LLOB_LOG_INFO("init", "shutting down");
+    // Persist the per-checkpoint sidecar one last time so any in-flight
+    // ablation/probe edits survive the close.  No-op when no checkpoint
+    // is open.
+    if (!s.checkpointPath.empty()) llob::SidecarSave(s, s.checkpointPath);
     llob::LoggerShutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

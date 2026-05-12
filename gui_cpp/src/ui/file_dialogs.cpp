@@ -10,6 +10,7 @@
 #include "ui/file_dialogs.hpp"
 
 #include "logger.hpp"
+#include "ui/sidecar.hpp"
 
 #include <ImGuiFileDialog.h>
 
@@ -76,7 +77,9 @@ void DispatchFileDialogs(AppState& s, Model& m, const FileDialogActions& act) {
             const auto res = m.loadCheckpoint(path);
             if (res.ok) {
                 LLOB_LOG_INFO("ckpt", "loadCheckpoint(%s) ok", path.c_str());
+                s.checkpointPath = path;
                 s.loadFromModel(m);   // refresh ModelInfo + sample tokens
+                SidecarLoad(s, path); // restore prior ablation/probe sets
             } else {
                 LLOB_LOG_ERROR("ckpt", "loadCheckpoint(%s) failed: %s",
                                path.c_str(), res.error.c_str());
@@ -101,6 +104,9 @@ void DispatchFileDialogs(AppState& s, Model& m, const FileDialogActions& act) {
             // session state (ablations, probes, steering, features) to JSON.
             m.exportSnapshot(path);
             LLOB_LOG_INFO("export", "wrote state -> %s", path.c_str());
+            // Also refresh the canonical sidecar so the next open of this
+            // checkpoint picks up the same state automatically.
+            SidecarSave(s, s.checkpointPath);
         }
         fd->Close();
     }

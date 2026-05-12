@@ -59,6 +59,10 @@ struct AppState {
     // Model (mockable — see model.hpp)
     ModelInfo                 model{};
     std::vector<std::string>  sampleTokens;     // used by inference/attn
+    // Path the active checkpoint was loaded from (set by File ▸ Open and
+    // by loadCheckpoint).  Empty when no checkpoint is open.  Drives the
+    // per-checkpoint sidecar JSON location.
+    std::string               checkpointPath;
 
     // Global selection (zero / empty when no model is loaded — the
     // demo seeder overrides these with sensible defaults for its model).

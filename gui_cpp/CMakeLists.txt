@@ -75,6 +75,7 @@ add_executable(llobotomy
   src/ui/dockhost.cpp
   src/ui/file_dialogs.cpp
   src/ui/settings.cpp
+  src/ui/sidecar.cpp
   src/ui/widgets.cpp
   src/workspaces/architecture.cpp
   src/workspaces/inference.cpp
