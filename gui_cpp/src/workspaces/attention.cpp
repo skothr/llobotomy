@@ -61,8 +61,13 @@ void DrawHeadBrowser(AppState& s, Model& m) {
         // [DATA HOOK] Model::getAttentionPattern(layer, head, seqLen, bias)
         // — N×N causal attention matrix (here at downsampled N=12).
         const auto data  = m.getAttentionPattern(s.activeLayer, h, kThumbN, b);
-        char lbl[64]; std::snprintf(lbl, sizeof lbl, "L%d.h%d · %s",
-                                     s.activeLayer, h, BiasName(b));
+        // Drop the L prefix — the workspace header already shows the
+        // active layer.  Abbreviate the bias name to 4 chars so the
+        // label has any chance of fitting under a 62px thumb.
+        const char* bn = BiasName(b);
+        char bn4[5] = {0};
+        for (int k = 0; k < 4 && bn[k]; ++k) bn4[k] = bn[k];
+        char lbl[32]; std::snprintf(lbl, sizeof lbl, "h%d · %s", h, bn4);
         char hk[16];  std::snprintf(hk,  sizeof hk,  "%d.%d", s.activeLayer, h);
         if (AttentionThumb(data, kThumbN, kThumb, lbl,
                            h == s.activeHead, s.ablatedHeads.contains(hk))) {

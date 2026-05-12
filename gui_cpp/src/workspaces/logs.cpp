@@ -198,7 +198,10 @@ void DrawMetrics(const AppState& s, Model& m) {
             std::snprintf(cuda, sizeof cuda, "%.1f / %.1f GB",
                            double(em.cuda_mem_used_GB), double(em.cuda_mem_total_GB));
         char cpu[16];      std::snprintf(cpu,    sizeof cpu,    "%s%%", FmtFloat(em.cpu_pct, "%.1f").c_str());
-        char fwd[24];      std::snprintf(fwd,    sizeof fwd,    "%s ms / step", FmtFloat(em.fwd_time_ms, "%.1f").c_str());
+        // "ms / step" gets truncated in the narrow metrics column at the
+        // default dock split — drop the "/ step" suffix (label "fwd time"
+        // already implies per-step latency).
+        char fwd[24];      std::snprintf(fwd,    sizeof fwd,    "%s ms", FmtFloat(em.fwd_time_ms, "%.1f").c_str());
         KV({
             { "log rate",  log_rate, "accent" },
             { "warn rate", warn_r,   n_warn > 0 ? "warn" : "muted" },

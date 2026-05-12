@@ -22,11 +22,22 @@ void DrawTitleBar(const char* title, const char* icon, const char* flag,
     dl->AddRectFilled(p0, p1, Sty().bg_titlebar);
     dl->AddLine({p0.x, p1.y - 1}, {p1.x, p1.y - 1}, Sty().border);
 
+    // Reserve a right-side area for the controls callback (if any).  This
+    // is the EFFECTIVE width — controls() lays out its buttons within it
+    // and the title-text region clips on its left edge so the title never
+    // overruns into the controls.
+    const float pad_x       = 8.0f;
+    const float controls_w  = controls ? 220.0f : 0.0f;
+    const float title_clip_right = p1.x - (controls ? controls_w + pad_x : pad_x);
+
     // Layout cursor inside the strip.
-    const float pad_x = 8.0f;
     float       cx    = p0.x + pad_x;
     const float ty    = p0.y + (bar_h - ImGui::GetFontSize()) * 0.5f;
 
+    // Push a clip rect so any title text that would overflow into the
+    // controls area (or past the right edge when controls is null) is
+    // hidden rather than painting garbage.
+    dl->PushClipRect(p0, ImVec2(title_clip_right, p1.y), true);
     if (icon && *icon) {
         dl->AddText({cx, ty}, Sty().accent, icon);
         cx += ImGui::CalcTextSize(icon).x + 6.0f;
@@ -37,11 +48,17 @@ void DrawTitleBar(const char* title, const char* icon, const char* flag,
         dl->AddText({cx, ty}, Sty().text_dim, flag);
         cx += ImGui::CalcTextSize(flag).x + 6.0f;
     }
+    // Drop the dock-id annotation when room is tight — it's purely a
+    // debug aid (matches the JSX mock's faint `##dockId` suffix).
     if (dockId && *dockId) {
         char buf[64];
         std::snprintf(buf, sizeof buf, "##%s", dockId);
-        dl->AddText({cx, ty}, Sty().text_dim, buf);
+        const float buf_w = ImGui::CalcTextSize(buf).x;
+        if (cx + buf_w <= title_clip_right) {
+            dl->AddText({cx, ty}, Sty().text_dim, buf);
+        }
     }
+    dl->PopClipRect();
 
     // Reserve the strip area so the parent window grows to include it; this
     // also advances the cursor to just below the strip.
@@ -52,8 +69,7 @@ void DrawTitleBar(const char* title, const char* icon, const char* flag,
     // Controls float: render the actual ImGui buttons in a child region
     // anchored to the right end of the strip.
     if (controls) {
-        const float ch_w = 220.0f;
-        ImGui::SetCursorScreenPos({p1.x - ch_w - pad_x, p0.y + 2.0f});
+        ImGui::SetCursorScreenPos({p1.x - controls_w - pad_x, p0.y + 2.0f});
         ImGui::PushStyleColor(ImGuiCol_Button,        Sty().bg_titlebar);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Sty().bg_header);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  Sty().bg_header_active);

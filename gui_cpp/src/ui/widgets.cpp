@@ -175,11 +175,14 @@ bool AttentionThumb(const std::vector<std::vector<float>>& data,
                           {g0.x + (j+1)*c + 0.5f, g0.y + (i+1)*c + 0.5f},
                           dim ? Sty().bg_panel_alt : HeatColor(std::clamp(v, 0.0f, 1.0f)));
     }
-    // label
+    // label — clip to the panel's interior so a label longer than the
+    // thumb doesn't bleed into the next thumb on the row.
     if (label) {
         const ImU32 col = dim ? Sty().text_dim : Sty().text_muted;
         const ImVec2 sz = ImGui::CalcTextSize(label);
+        dl->PushClipRect(p0, p1, true);
         dl->AddText({p0.x + (panel_w - sz.x) * 0.5f, p0.y + pad + size + 1}, col, label);
+        dl->PopClipRect();
     }
 
     ImGui::InvisibleButton("##athumb", { panel_w, panel_h });
@@ -195,30 +198,60 @@ int AttentionHeatmap(const std::vector<std::vector<float>>& data,
     const float c = o.cellSize;
     const float W = n * c;
     const float H = n * c;
-    const float left_w = 60.0f, top_h = 60.0f;
+
+    // Label gutter sizes — left wide enough for the longest token name,
+    // top tall enough for vertical char stack.  Both clipped to a max so
+    // pathological tokens don't shrink the heatmap area too much.
+    constexpr int   kMaxTopChars = 8;
+    constexpr float kCharStepY   = 9.0f;
+    const float top_h = kMaxTopChars * kCharStepY + 6.0f;       // ~78
+    float left_w = 70.0f;
+    for (int i = 0; i < n; ++i) {
+        const ImVec2 sz = ImGui::CalcTextSize(tokens[i].data(),
+                                              tokens[i].data() + tokens[i].size());
+        left_w = std::max(left_w, sz.x + 8.0f);
+    }
+    left_w = std::min(left_w, 160.0f);   // cap at 160px
 
     const ImVec2 p_root = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Top labels (rotated would need a custom path; we draw vertically by
-    // painting one char per row to keep it simple — looks like the mock).
+    // Top labels — vertical char stack (one char per row).  Truncate at
+    // kMaxTopChars so taller tokens don't blow past the heatmap top edge.
     for (int j = 0; j < n; ++j) {
         const std::string_view t = tokens[j];
         const ImU32 col = (j == o.selected) ? Sty().accent : Sty().text_muted;
         const float  cx = p_root.x + left_w + j * c;
-        for (int k = 0; k < int(t.size()) && k < 8; ++k) {
+        const int chars = std::min<int>(int(t.size()), kMaxTopChars);
+        for (int k = 0; k < chars; ++k) {
             char buf[2] = { t[k], 0 };
-            dl->AddText({cx + c*0.5f - 3, p_root.y + 4 + k * 9.0f}, col, buf);
+            dl->AddText({cx + c*0.5f - 3, p_root.y + 4 + k * kCharStepY}, col, buf);
         }
     }
 
-    // Left labels
+    // Left labels — right-aligned in the gutter.  Long tokens get
+    // ellipsised with a leading "…" so the suffix stays meaningful.
+    const float kLabelMaxW = left_w - 6.0f;
     for (int i = 0; i < n; ++i) {
         const std::string_view t = tokens[i];
         const ImU32 col = (i == o.selected) ? Sty().accent : Sty().text_muted;
-        const ImVec2 sz = ImGui::CalcTextSize(t.data(), t.data() + t.size());
+        std::string truncated;
+        const char* a = t.data();
+        const char* b = t.data() + t.size();
+        ImVec2 sz = ImGui::CalcTextSize(a, b);
+        if (sz.x > kLabelMaxW) {
+            // Drop chars from the FRONT until it fits, then prepend "…"
+            std::string_view s = t;
+            while (!s.empty() && ImGui::CalcTextSize(s.data(), s.data() + s.size()).x > kLabelMaxW - 8.0f) {
+                s.remove_prefix(1);
+            }
+            truncated = "…" + std::string(s);
+            a = truncated.data();
+            b = truncated.data() + truncated.size();
+            sz = ImGui::CalcTextSize(a, b);
+        }
         dl->AddText({p_root.x + left_w - sz.x - 4, p_root.y + top_h + i * c + (c - sz.y) * 0.5f},
-                    col, t.data(), t.data() + t.size());
+                    col, a, b);
     }
 
     // Cells
@@ -236,13 +269,17 @@ int AttentionHeatmap(const std::vector<std::vector<float>>& data,
             dl->AddRect(r0, r1, Sty().accent);
         }
     }
-    // Hit-test full cells region (column granularity).
+    // Hit-test full cells region.  `selected` is the QUERY row (the
+    // highlight code at line 235 paints `selected == i`), so we return
+    // the ROW the click landed on, not the column.  Earlier code computed
+    // (mp.x - g0.x) / c which is the column index — a real bug, the
+    // highlighted row was driven by horizontal mouse position.
     ImGui::SetCursorScreenPos(g0);
     ImGui::InvisibleButton("##attn_cells", {W, H});
     if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const ImVec2 mp = ImGui::GetMousePos();
-        const int j = int((mp.x - g0.x) / c);
-        if (j >= 0 && j < n) clicked_col = j;
+        const int i = int((mp.y - g0.y) / c);
+        if (i >= 0 && i < n) clicked_col = i;     // var misnamed, returns row
     }
 
     ImGui::SetCursorScreenPos({p_root.x, p_root.y + top_h + H + 4});

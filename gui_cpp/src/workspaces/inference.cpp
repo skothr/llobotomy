@@ -252,11 +252,23 @@ void DrawProbePanel(AppState& s, Model& m) {
         ActivationHistogram(bins, ImGui::GetContentRegionAvail().x - 8, 84, Sty().info,
                             std::span{an, std::size(an)});
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
-        ImGui::TextUnformatted("[engine: provide min/max/zero-frac in TensorStats]");
+        ImGui::TextWrapped("[engine: provide min/max/zero-frac in TensorStats]");
         ImGui::PopStyleColor();
     }
     char hb[8]; std::snprintf(hb, sizeof hb, "%dh", s.model.nHeads);
     if (auto sec = BeginSection("Per-head attention norms", false, hb)) {
+        // Pick a column count + button width so the row always fits the
+        // available content area — was hardcoded to 4 cols × 80px which
+        // overflowed any panel narrower than ~330px.
+        const float avail   = ImGui::GetContentRegionAvail().x;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        int per_row = (s.model.nHeads >= 4) ? 4 : std::max(1, s.model.nHeads);
+        // Drop columns until the rendered row fits.
+        while (per_row > 1 &&
+               (per_row * 56.0f + (per_row - 1) * spacing) > avail) {
+            --per_row;
+        }
+        const float btn_w = (avail - (per_row - 1) * spacing) / float(per_row);
         for (int h = 0; h < s.model.nHeads; ++h) {
             ImGui::PushID(h);
             char hk[16]; std::snprintf(hk, sizeof hk, "%d.%d", s.activeLayer, h);
@@ -272,12 +284,12 @@ void DrawProbePanel(AppState& s, Model& m) {
             char hl[24];
             if (std::isnan(v)) std::snprintf(hl, sizeof hl, "h%d  —", h);
             else                std::snprintf(hl, sizeof hl, "h%d  %.2f", h, v * 1.5f);
-            if (ImGui::Button(hl, ImVec2(80, 0))) s.setActiveHead(h);
+            if (ImGui::Button(hl, ImVec2(btn_w, 0))) s.setActiveHead(h);
             ImGui::PopStyleColor(3);
             ImGui::PopID();
-            if ((h + 1) % 4 != 0) ImGui::SameLine();
+            if ((h + 1) % per_row != 0) ImGui::SameLine();
         }
-        ImGui::NewLine();
+        if (s.model.nHeads % per_row != 0) ImGui::NewLine();
     }
     if (auto sec = BeginSection("MLP feature activations", false, "top 8")) {
         // [DATA HOOK] Model::getMlpFeatures(layer, k) — top-k MLP feature
