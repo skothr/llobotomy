@@ -23,9 +23,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <string>
 
 namespace {
 
@@ -170,19 +172,47 @@ void DrawStatusBar(const llob::AppState& s) {
 void DrawProjectTabs(llob::AppState& s) {
     using namespace llob;
     if (ImGui::BeginTabBar("##projects", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs)) {
-        for (auto& p : s.projects) {
+        // PushID(p.id) on each iteration so two tabs that happen to share a
+        // display name still get distinct ImGui IDs — the previous version
+        // hashed solely on the label, which collided every time the + button
+        // produced a second "untitled".
+        std::size_t closed_idx = SIZE_MAX;
+        for (std::size_t i = 0; i < s.projects.size(); ++i) {
+            auto& p = s.projects[i];
+            ImGui::PushID(p.id.c_str());
             ImGuiTabItemFlags flags = (p.id == s.activeProject) ? ImGuiTabItemFlags_SetSelected : 0;
             bool open = true;
             if (ImGui::BeginTabItem(p.name.c_str(), &open, flags)) {
                 s.activeProject = p.id;
                 ImGui::EndTabItem();
             }
-            (void)open;  // close icon present, but don't actually mutate vector while iterating
+            ImGui::PopID();
+            // Honor the close-X — defer the actual erase until after the
+            // BeginTabBar loop so we don't invalidate iterators/IDs mid-frame.
+            if (!open && closed_idx == SIZE_MAX) closed_idx = i;
         }
         if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
-            s.projects.push_back({"px", "untitled", ProjectTab::Dot::Dim, ""});
+            // Monotonic suffix keeps id + display label unique across clicks
+            // so the next "untitled" doesn't collide with the previous one.
+            static int next_untitled = 1;
+            char id_buf[32], name_buf[32];
+            std::snprintf(id_buf,   sizeof id_buf,   "p_untitled_%d", next_untitled);
+            std::snprintf(name_buf, sizeof name_buf, "untitled-%d",   next_untitled);
+            ++next_untitled;
+            s.projects.push_back({ id_buf, name_buf, ProjectTab::Dot::Dim, "" });
         }
         ImGui::EndTabBar();
+
+        if (closed_idx != SIZE_MAX && closed_idx < s.projects.size()) {
+            const std::string was_active = s.activeProject;
+            const std::string closed_id  = s.projects[closed_idx].id;
+            s.projects.erase(s.projects.begin() + static_cast<std::ptrdiff_t>(closed_idx));
+            // If the user closed the active project, snap to whatever's left
+            // (or clear it when the list empties).
+            if (was_active == closed_id) {
+                s.activeProject = s.projects.empty() ? "" : s.projects.front().id;
+            }
+        }
     }
 }
 
