@@ -209,11 +209,14 @@ void DrawOutline(AppState& s, Model& m) {
 
 // ── Architecture map (custom 2D) ───────────────────────────────────────────
 void DrawArchMap(AppState& s, Model& m) {
-    char zoom[24]; std::snprintf(zoom, sizeof zoom, "zoom %d%%", int(s.archZoom * 100));
+    // Format as "1.00x" rather than "100%" — JetBrains Mono's slashed-
+    // zero glyph at 14px makes "100" read as "160" at a glance, leading
+    // to user confusion about the actual zoom value.
+    char zoom[24]; std::snprintf(zoom, sizeof zoom, "zoom %.2fx", double(s.archZoom));
     DrawTitleBar("architecture_map", "◫", zoom, "arch", [&] {
         if (ImGui::SmallButton("-"))    s.archZoom = std::max(0.4f, s.archZoom - 0.1f);
         ImGui::SameLine();
-        char z[8]; std::snprintf(z, sizeof z, "%d%%", int(s.archZoom * 100));
+        char z[8]; std::snprintf(z, sizeof z, "%.2fx", double(s.archZoom));
         if (ImGui::SmallButton(z))      s.archZoom = 1.0f;
         ImGui::SameLine();
         if (ImGui::SmallButton("+"))    s.archZoom = std::min(2.0f, s.archZoom + 0.1f);
@@ -528,15 +531,15 @@ void DrawArchMap(AppState& s, Model& m) {
         ImGui::SetScrollY(0);
     }
 
-    // Mouse-wheel zoom — anchored at the cursor so the point under the
-    // mouse stays put.  Ctrl+wheel = fine zoom (5% step); plain wheel
-    // = coarse zoom (10% step).  No more "Ctrl required" confusion —
-    // the wheel zooms by default in the arch map, matching CAD/editor
-    // expectations.
-    if (ImGui::IsWindowHovered()) {
+    // Mouse-wheel zoom — anchored at the cursor.  Bare wheel scrolls
+    // the workspace as ImGui does by default; Ctrl+wheel zooms (10% step,
+    // browser convention).  Shift+Ctrl+wheel finer (5% step).  Earlier
+    // build had bare-wheel = zoom but that fights ImGui's vertical scroll
+    // and surprises users who reach for plain wheel to scroll.
+    if (ImGui::IsWindowHovered() && ImGui::GetIO().KeyCtrl) {
         const float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
-            const float step = ImGui::GetIO().KeyCtrl ? 0.05f : 0.10f;
+            const float step = ImGui::GetIO().KeyShift ? 0.05f : 0.10f;
             const float new_zoom = std::clamp(s.archZoom + wheel * step, 0.3f, 3.0f);
             if (new_zoom != s.archZoom) {
                 // Anchor: keep the world point under the cursor stationary
