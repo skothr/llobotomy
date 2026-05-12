@@ -11,6 +11,7 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
+#include "ui/settings.hpp"
 #include "workspaces/workspaces.hpp"
 
 #include <imgui.h>
@@ -32,17 +33,30 @@ void glfw_error(int err, const char* desc) {
     LLOB_LOG_WARN("glfw", "error %d: %s", err, desc);
 }
 
-void DrawMenubar(const llob::AppState& s, llob::Model& m) {
+// Menu intents — DrawMenubar collects the user's clicks here so the main
+// loop can dispatch into the matching modal/dialog/action.  Keeping this in
+// one struct lets future polish phases (file dialogs, About) add slots
+// without re-threading the menubar signature.
+struct MenuActions {
+    bool open_settings = false;
+    bool open_about    = false;
+    bool open_ckpt     = false;
+    bool save_probe    = false;
+    bool export_state  = false;
+};
+
+MenuActions DrawMenubar(llob::AppState& s, llob::Model& m) {
     using namespace llob;
+    MenuActions act{};
     if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
         ImGui::TextUnformatted("\xE2\x96\x91 llobotomy");      // ░
         ImGui::PopStyleColor();
         ImGui::Spacing();
         if (ImGui::BeginMenu("File")) {
-            ImGui::MenuItem("Open checkpoint…",     "Ctrl+O");
-            ImGui::MenuItem("Save probe set…",      "Ctrl+S");
-            ImGui::MenuItem("Export state…",        "Ctrl+E");
+            if (ImGui::MenuItem("Open checkpoint…", "Ctrl+O")) act.open_ckpt    = true;
+            if (ImGui::MenuItem("Save probe set…",  "Ctrl+S")) act.save_probe   = true;
+            if (ImGui::MenuItem("Export state…",    "Ctrl+E")) act.export_state = true;
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Ctrl+Q")) std::exit(0);
             ImGui::EndMenu();
@@ -51,8 +65,14 @@ void DrawMenubar(const llob::AppState& s, llob::Model& m) {
         if (ImGui::BeginMenu("Model"))  { ImGui::MenuItem("Reload"); ImGui::MenuItem("Switch model…"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Probe"))  { ImGui::MenuItem("Train new probe…"); ImGui::MenuItem("Library"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Run"))    { ImGui::MenuItem("Run / Pause", "Space"); ImGui::MenuItem("Step"); ImGui::MenuItem("Reset"); ImGui::EndMenu(); }
-        if (ImGui::BeginMenu("View"))   { ImGui::MenuItem("Settings…"); ImGui::Separator(); ImGui::MenuItem("Show raw pane"); ImGui::EndMenu(); }
-        if (ImGui::BeginMenu("Help"))   { ImGui::MenuItem("About"); ImGui::EndMenu(); }
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Settings…")) act.open_settings = true;
+            ImGui::Separator();
+            ImGui::MenuItem("Show raw pane", nullptr, &s.showRaw);
+            ImGui::MenuItem("Animate live data", nullptr, &s.liveAnim);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Help"))   { if (ImGui::MenuItem("About")) act.open_about = true; ImGui::EndMenu(); }
 
         // [DATA HOOK] Model::getEngineMetrics() — device tag, dtype,
         // current frame time, vram usage.  Renders as "—" when unwired.
@@ -75,9 +95,9 @@ void DrawMenubar(const llob::AppState& s, llob::Model& m) {
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
         ImGui::TextUnformatted(right);
         ImGui::PopStyleColor();
-        (void)s;
         ImGui::EndMainMenuBar();
     }
+    return act;
 }
 
 void DrawStatusBar(const llob::AppState& s) {
@@ -296,10 +316,12 @@ int main() {
     llob::LoggerInit(&s, "./llobotomy.log");
     LLOB_LOG_INFO("init", "llobotomy starting · log file: %s",
                   llob::LoggerPath().c_str());
+    // SettingsLoad applies the persisted theme/density/accent itself
+    // (calls ApplyStyle internally), so no explicit BuildStyle here.
+    llob::SettingsLoad(s);
 #if LLOB_USE_MOCK_DATA
     s.seedMockData();
 #endif
-    llob::ApplyStyle(llob::BuildStyle(s.theme, s.density, s.accentOverride));
 
     llob::MockModel mm;
     llob::Model&    model = mm;
@@ -321,7 +343,13 @@ int main() {
             llob::LoggerPush(e.sev, e.kind, e.msg);
         }
         HandleShortcuts(s);
-        DrawMenubar(s, model);
+        const MenuActions menu = DrawMenubar(s, model);
+        llob::DrawSettingsModal(s, menu.open_settings);
+        // Phase 3 will dispatch menu.open_ckpt / save_probe / export_state
+        // and Phase 7 menu.open_about.  No-op for now — the bools are
+        // captured so the menu items don't silently swallow the click.
+        (void)menu.open_about; (void)menu.open_ckpt;
+        (void)menu.save_probe; (void)menu.export_state;
 
         // Project tabs strip (just under the menubar).
         ImGuiViewport* vp = ImGui::GetMainViewport();

@@ -59,6 +59,7 @@ add_executable(llobotomy
   src/model/mock_model.cpp
   src/ui/colormap.cpp
   src/ui/chrome.cpp
+  src/ui/settings.cpp
   src/ui/widgets.cpp
   src/workspaces/architecture.cpp
   src/workspaces/inference.cpp
