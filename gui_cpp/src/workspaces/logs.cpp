@@ -7,7 +7,7 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
-#include "ui/widgets.hpp"
+#include "ui/fmt.hpp"
 
 #include <imgui.h>
 
@@ -98,28 +98,42 @@ void DrawFilters() {
     ImGui::EndChild();
 }
 
-void DrawMetrics(const AppState& s) {
+void DrawMetrics(const AppState& s, Model& m) {
     DrawTitleBar("metrics", "∿", nullptr, "metrics-panel");
     if (!ImGui::BeginChild("##mt_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
     if (auto sec = BeginSection("Live counters", true)) {
-        char rate[32]; std::snprintf(rate, sizeof rate, "%zu /min", s.logs.size() / 60 + 1);
-        char ren[32];  std::snprintf(ren, sizeof ren, "%.1f ms / step", s.renderMs);
+        // log_rate is observable from AppState (UI source of truth for the
+        // ring buffer); the rest comes from the engine.
+        // [DATA HOOK] Model::getEngineMetrics() — warn/err rates, cuda
+        // memory, cpu %, fwd time, fps, device + dtype tags.
+        const auto em = m.getEngineMetrics();
+        char log_rate[32];
+        std::snprintf(log_rate, sizeof log_rate, "%zu /min", s.logs.size() / 60 + 1);
+        char cuda[32];
+        if (std::isnan(em.cuda_mem_used_GB) || std::isnan(em.cuda_mem_total_GB))
+            std::snprintf(cuda, sizeof cuda, "—");
+        else
+            std::snprintf(cuda, sizeof cuda, "%.1f / %.1f GB",
+                           double(em.cuda_mem_used_GB), double(em.cuda_mem_total_GB));
+        char warn_r[16]; std::snprintf(warn_r, sizeof warn_r, "%s /min", FmtInt(em.warn_rate_per_min).c_str());
+        char err_r[16];  std::snprintf(err_r,  sizeof err_r,  "%s /min", FmtInt(em.err_rate_per_min).c_str());
+        char cpu[16];    std::snprintf(cpu,    sizeof cpu,    "%s%%",    FmtFloat(em.cpu_pct, "%.1f").c_str());
+        char fwd[24];    std::snprintf(fwd,    sizeof fwd,    "%s ms / step", FmtFloat(em.fwd_time_ms, "%.1f").c_str());
         KV({
-            { "log rate",  rate, "accent" },
-            { "warn rate", "4 /min", "warn" },
-            { "err rate",  "0 /min", "good" },
-            { "cuda mem",  "38.4 / 80 GB", "good" },
-            { "cpu",       "11.2%",        "" },
-            { "fwd time",  ren,            "" },
+            { "log rate",  log_rate, "accent" },
+            { "warn rate", warn_r,   "warn"   },
+            { "err rate",  err_r,    "good"   },
+            { "cuda mem",  cuda,     "good"   },
+            { "cpu",       cpu,      ""       },
+            { "fwd time",  fwd,      ""       },
         });
-        EndSection(sec);
     }
     ImGui::EndChild();
 }
 
 }  // namespace
 
-void DrawLogsWorkspace(AppState& s, Model& /*m*/) {
+void DrawLogsWorkspace(AppState& s, Model& m) {
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     const float gap = 1.0f;
     const float right_w = 320.0f;
@@ -134,7 +148,7 @@ void DrawLogsWorkspace(AppState& s, Model& /*m*/) {
     ImGui::BeginChild("##log_filters", { right_w, top_h }, ImGuiChildFlags_Borders);
     DrawFilters(); ImGui::EndChild();
     ImGui::BeginChild("##log_metrics", { right_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawMetrics(s); ImGui::EndChild();
+    DrawMetrics(s, m); ImGui::EndChild();
     ImGui::EndChild();
 }
 

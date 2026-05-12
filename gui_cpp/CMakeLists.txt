@@ -10,6 +10,13 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# When ON, MockModel returns deterministic fake data (so the UI looks
+# alive in dev / screenshots).  When OFF, MockModel returns empty / NaN
+# sentinels — the UI shows "no data" placeholders so a release build
+# can't accidentally ship with mock numbers.  Always disable for any
+# build that links a real engine backend.
+option(LLOB_USE_MOCK_DATA "Have MockModel return deterministic mock data" ON)
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -68,3 +75,6 @@ target_compile_options(llobotomy PRIVATE
   -Wall -Wextra -Wpedantic
   -Wno-c99-designator
 )
+if(LLOB_USE_MOCK_DATA)
+  target_compile_definitions(llobotomy PRIVATE LLOB_USE_MOCK_DATA=1)
+endif()

@@ -1,5 +1,9 @@
-// Inference workspace — residual_flow | (forward_pass + token_strip) |
+// Inference workspace — residual flow | (forward_pass + token_strip) |
 // (probe panel + probe controls) | [raw tensor], split per HANDOFF §3.2.
+//
+// All values come from the Model interface; nothing in this file is
+// hardcoded.  The data hooks each section needs are documented inline as
+// `// [DATA HOOK]` comments naming the Model::* method that supplies them.
 
 #include "workspaces/workspaces.hpp"
 
@@ -7,13 +11,14 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
+#include "ui/fmt.hpp"
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -21,11 +26,10 @@ namespace llob {
 
 namespace {
 
-void DrawResidualFlow(AppState& s, Model&) {
+void DrawResidualFlow(AppState& s, Model& m) {
     DrawTitleBar("residual_flow", "≡", "float", "resflow");
     if (!ImGui::BeginChild("##rf_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
 
-    // Top: token info + LIVE pill.
     char tok[64];
     if (s.activeToken < int(s.sampleTokens.size())) {
         std::snprintf(tok, sizeof tok, "Token: \"%s\" [pos %d]",
@@ -39,7 +43,6 @@ void DrawResidualFlow(AppState& s, Model&) {
     ImGui::SameLine(); ImGui::Dummy(ImVec2(8, 0)); ImGui::SameLine();
     Pill(s.running ? "RUN" : "LIVE", s.running ? "good" : "accent");
 
-    // Body: layer-rows with attn / mlp contribution bars.
     const float w = ImGui::GetContentRegionAvail().x;
     const float h = std::max(160.0f, ImGui::GetContentRegionAvail().y - 120.0f);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -58,7 +61,6 @@ void DrawResidualFlow(AppState& s, Model&) {
     dl->AddText({laneX - 12, p0.y + 0}, Sty().accent, "resid");
     dl->AddText({p1.x - 60, p0.y + 0}, Sty().warn,   "mlp");
 
-    Mulberry32 rng(7);
     for (int i = 0; i < n; ++i) {
         const float yc = p0.y + 16 + i * row + row * 0.5f;
         const bool active = (i == s.activeLayer);
@@ -66,17 +68,19 @@ void DrawResidualFlow(AppState& s, Model&) {
             dl->AddRectFilled({p0.x, yc - row * 0.5f + 1}, {p1.x, yc + row * 0.5f - 1},
                               Sty().accent_bg);
         }
-        const float att = 0.2f + rng.next() * 0.7f;
-        const float mlp = 0.15f + rng.next() * 0.7f;
-        dl->AddRectFilled({p0.x + 56,        yc - 1}, {p0.x + 56 + 20 * att, yc + 1}, Sty().info);
-        dl->AddRectFilled({p1.x - 76,        yc - 1}, {p1.x - 76 + 20 * mlp, yc + 1}, Sty().warn);
+        // [DATA HOOK] Model::getResidualContribution(layer) — per-layer
+        // {attn, mlp} norm contributions for this token's forward pass.
+        const auto c = m.getResidualContribution(i);
+        const float att = std::isnan(c.attn) ? 0.0f : c.attn;
+        const float mlp = std::isnan(c.mlp)  ? 0.0f : c.mlp;
+        dl->AddRectFilled({p0.x + 56, yc - 1}, {p0.x + 56 + 20 * att, yc + 1}, Sty().info);
+        dl->AddRectFilled({p1.x - 76, yc - 1}, {p1.x - 76 + 20 * mlp, yc + 1}, Sty().warn);
         dl->AddCircle({p0.x + 50, yc}, 4, Sty().info, 0, 1);
         dl->AddCircle({p1.x - 50, yc}, 4, Sty().warn, 0, 1);
         char ll[8]; std::snprintf(ll, sizeof ll, "L%02d", i);
         dl->AddText({laneX + 8, yc - 6},
                     active ? Sty().accent : Sty().text_muted, ll);
 
-        // Hit-test the row.
         ImGui::PushID(i);
         ImGui::SetCursorScreenPos({p0.x, yc - row * 0.5f});
         ImGui::InvisibleButton("rrow", { w, row });
@@ -86,20 +90,26 @@ void DrawResidualFlow(AppState& s, Model&) {
     ImGui::SetCursorScreenPos({p0.x, p1.y + 4});
     ImGui::Dummy(ImVec2(0, 0));
 
-    // Bottom KV summary.
+    // [DATA HOOK] Model::getResidualSummary(layer) — bottom KV summary for
+    // the active layer (||attn_out||, ||mlp_out||, ||resid||, cos(prev)).
+    const auto sum = m.getResidualSummary(s.activeLayer);
     char L[16]; std::snprintf(L, sizeof L, "L%02d", s.activeLayer);
+    const auto vAtt   = FmtFloat(sum.attn_out_norm, "%.3f");
+    const auto vMlp   = FmtFloat(sum.mlp_out_norm,  "%.3f");
+    const auto vResid = FmtFloat(sum.resid_norm,    "%.3f");
+    const auto vCos   = FmtFloat(sum.cos_prev,      "%.3f");
     KV({
-        { "Sel layer",  L,        "accent" },
-        { "||attn_out||", "0.421",  "accent" },
-        { "||mlp_out||",  "0.388",  "warn" },
-        { "||resid||",    "14.832", "" },
-        { "cos(prev)",    "0.991",  "good" },
+        { "Sel layer",    L,      "accent" },
+        { "||attn_out||", vAtt,   "accent" },
+        { "||mlp_out||",  vMlp,   "warn" },
+        { "||resid||",    vResid, "" },
+        { "cos(prev)",    vCos,   "good" },
     }, true);
 
     ImGui::EndChild();
 }
 
-void DrawForwardPass(AppState& s, Model&) {
+void DrawForwardPass(AppState& s, Model& m) {
     char flag[16]; std::snprintf(flag, sizeof flag, "%s", s.running ? "running…" : "idle");
     DrawTitleBar("forward_pass", "▶", flag, "fwd", [&] {
         if (ImGui::SmallButton(s.running ? "|| pause" : "> run")) {
@@ -115,6 +125,8 @@ void DrawForwardPass(AppState& s, Model&) {
 
     char b[24]; std::snprintf(b, sizeof b, "%zu tok", s.sampleTokens.size());
     if (auto sec = BeginSection("Prompt", false, b)) {
+        // Source: AppState.sampleTokens.  In a real run this comes from the
+        // tokenizer (Tokenizer::encode on the input string).
         for (std::size_t i = 0; i < s.sampleTokens.size(); ++i) {
             ImGui::PushID(int(i));
             const bool act = (int(i) == s.activeToken);
@@ -128,11 +140,19 @@ void DrawForwardPass(AppState& s, Model&) {
             if ((i + 1) % 8 != 0) ImGui::SameLine();
         }
         ImGui::NewLine();
-        EndSection(sec);
     }
 
     if (auto sec = BeginSection("Per-token logit-lens trajectory", false, "layer × top-1")) {
-        if (ImGui::BeginTable("##lens", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner)) {
+        // [DATA HOOK] Model::getLogitLensTrajectory(token, kLayers) — per-
+        // layer top-1 / top-2 token + their probabilities + entropy.  When
+        // `is_resolved` is true the row is highlighted as the layer where
+        // the prediction stabilises.
+        const auto rows = m.getLogitLensTrajectory(s.activeToken, s.model.nLayers);
+        if (rows.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no logit-lens trajectory available");
+            ImGui::PopStyleColor();
+        } else if (ImGui::BeginTable("##lens", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner)) {
             ImGui::TableSetupColumn("L",       ImGuiTableColumnFlags_WidthFixed,  32);
             ImGui::TableSetupColumn("top-1",   ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableSetupColumn("prob",    ImGuiTableColumnFlags_WidthFixed,  56);
@@ -141,56 +161,49 @@ void DrawForwardPass(AppState& s, Model&) {
             ImGui::TableSetupColumn("entropy", ImGuiTableColumnFlags_WidthFixed,  60);
             ImGui::TableSetupColumn("shift",   ImGuiTableColumnFlags_WidthFixed,  80);
             ImGui::TableHeadersRow();
-
-            const struct Row { const char* L; const char* t1; float p1; const char* t2; float p2; float ent; }
-                rows[] = {
-                    {"00", "the",     0.04f, "a",       0.03f, 4.82f},
-                    {"01", "the",     0.06f, "of",      0.04f, 4.61f},
-                    {"02", "the",     0.09f, "a",       0.05f, 4.32f},
-                    {"03", "to",      0.11f, "the",     0.07f, 4.04f},
-                    {"04", "to",      0.18f, "on",      0.09f, 3.71f},
-                    {"05", "to",      0.28f, "towards", 0.07f, 3.21f},
-            };
-            for (auto& r : rows) {
-                ImGui::PushID(r.L);
-                const int Li = std::atoi(r.L);
+            for (const auto& r : rows) {
+                ImGui::PushID(r.layer);
+                ImGui::TableNextRow(r.is_resolved ? ImGuiTableRowFlags_Headers : 0);
                 if (ImGui::TableNextColumn()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
-                    ImGui::TextUnformatted(r.L); ImGui::PopStyleColor();
+                    char L[4]; std::snprintf(L, sizeof L, "%02d", r.layer);
+                    ImGui::TextUnformatted(L); ImGui::PopStyleColor();
                 }
                 if (ImGui::TableNextColumn()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
-                    ImGui::Text("\"%s\"", r.t1); ImGui::PopStyleColor();
+                    ImGui::Text("\"%s\"", r.top1.c_str()); ImGui::PopStyleColor();
                 }
-                if (ImGui::TableNextColumn()) ImGui::Text("%.3f", r.p1);
+                if (ImGui::TableNextColumn()) ImGui::TextUnformatted(FmtFloat(r.p1, "%.3f").c_str());
                 if (ImGui::TableNextColumn()) {
                     ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
-                    ImGui::Text("\"%s\"", r.t2); ImGui::PopStyleColor();
+                    ImGui::Text("\"%s\"", r.top2.c_str()); ImGui::PopStyleColor();
                 }
-                if (ImGui::TableNextColumn()) ImGui::Text("%.3f", r.p2);
-                if (ImGui::TableNextColumn()) ImGui::Text("%.2f",  r.ent);
-                if (ImGui::TableNextColumn()) Bar(1.0f - r.ent / 5.0f, 70, 6, Sty().accent);
-
-                ImGui::SameLine();
-                if (ImGui::IsItemClicked()) s.setActiveLayer(Li);
+                if (ImGui::TableNextColumn()) ImGui::TextUnformatted(FmtFloat(r.p2, "%.3f").c_str());
+                if (ImGui::TableNextColumn()) ImGui::TextUnformatted(FmtFloat(r.entropy, "%.2f").c_str());
+                if (ImGui::TableNextColumn()) Bar(1.0f - r.entropy / 5.0f, 70, 6, Sty().accent);
+                if (ImGui::IsItemClicked()) s.setActiveLayer(r.layer);
                 ImGui::PopID();
             }
             ImGui::EndTable();
         }
-        EndSection(sec);
     }
 
     if (auto sec = BeginSection("Output logits · next-token distribution")) {
-        const LogitItem items[] = {
-            { "to",       0.92f,  +0.04f, true  },
-            { "towards",  0.022f, -0.01f, false },
-            { "on",       0.018f,  0.0f,  false },
-            { "at",       0.011f, -0.002f,false },
-            { "for",      0.008f, +0.001f,false },
-            { "through",  0.005f,  0.0f,  false },
-        };
-        LogitBars(std::span{items, std::size(items)});
-        EndSection(sec);
+        // [DATA HOOK] Model::getOutputLogits(k) — top-k tokens with prob
+        // and (optional) baseline-vs-current delta.  `selected` marks the
+        // model's current pick for visual emphasis.
+        const auto items = m.getOutputLogits(8);
+        if (items.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no output distribution available");
+            ImGui::PopStyleColor();
+        } else {
+            std::vector<LogitItem> view; view.reserve(items.size());
+            for (const auto& it : items) {
+                view.push_back({ it.token, it.prob, it.delta, it.selected });
+            }
+            LogitBars(std::span{view});
+        }
     }
 
     ImGui::EndChild();
@@ -201,23 +214,35 @@ void DrawProbePanel(AppState& s, Model& m) {
     DrawTitleBar(title, "◈", nullptr, "probe");
     if (!ImGui::BeginChild("##probe_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
 
-    char id[16];   std::snprintf(id,   sizeof id,   "L%02d", s.activeLayer);
-    char shape[40];std::snprintf(shape,sizeof shape,"[%zu, %d]", s.sampleTokens.size(), s.model.dModel);
     if (auto sec = BeginSection("Layer summary", true)) {
+        // [DATA HOOK] Model::getResidualSummary(layer) — same struct as
+        // residual_flow's bottom KV; aggregated forward-pass norms for the
+        // selected layer.
+        const auto sum = m.getResidualSummary(s.activeLayer);
+        char id[16];   std::snprintf(id,   sizeof id,   "L%02d", s.activeLayer);
+        char shape[40];std::snprintf(shape,sizeof shape,"[%zu, %d]",
+                                       s.sampleTokens.size(), s.model.dModel);
+        char rank[24]; std::snprintf(rank, sizeof rank, "%s / %s",
+                                      FmtInt(sum.rank_eff).c_str(),
+                                      FmtInt(sum.rank_full).c_str());
         KV({
             { "layer.id",  id,    "accent" },
             { "resid_pre", shape, "" },
             { "attn_out",  shape, "" },
             { "mlp_out",   shape, "" },
-            { "||attn||",  "0.421", "accent" },
-            { "||mlp||",   "0.388", "warn" },
-            { "cos(L-1)",  "0.9821","good" },
-            { "kurtosis",  "4.32",  "" },
+            { "||attn||",  FmtFloat(sum.attn_out_norm, "%.3f"), "accent" },
+            { "||mlp||",   FmtFloat(sum.mlp_out_norm,  "%.3f"), "warn"   },
+            { "cos(L-1)",  FmtFloat(sum.cos_prev,      "%.4f"), "good"   },
+            { "kurtosis",  FmtFloat(sum.kurtosis,      "%.2f"), "" },
+            { "rank_eff",  rank,                                "" },
         });
-        EndSection(sec);
     }
-    if (auto sec = BeginSection("resid_post · histogram", false, "μ=0.001 σ=0.847")) {
-        const auto bins = m.getWeightHistogram(s.activeLayer, "resid_post", 40);
+    if (auto sec = BeginSection("resid_post · histogram", false, "μ=? σ=?")) {
+        // [DATA HOOK] Model::getWeightHistogram(name, bins) — distribution
+        // of residual_post values for the selected layer.  Engine names the
+        // tensor "blocks.<L>.resid_post" or similar.
+        char name[64]; std::snprintf(name, sizeof name, "blocks.%d.resid_post", s.activeLayer);
+        const auto bins = m.getWeightHistogram(name, 40);
         const LensAnnotation an[] = {
             { 0.50f, "μ",         Sty().accent },
             { 0.78f, "top-1 dir", Sty().warn   },
@@ -225,9 +250,8 @@ void DrawProbePanel(AppState& s, Model& m) {
         ActivationHistogram(bins, ImGui::GetContentRegionAvail().x - 8, 84, Sty().info,
                             std::span{an, std::size(an)});
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
-        ImGui::TextUnformatted("min -3.21 · max +3.04 · zero-frac 0.024");
+        ImGui::TextUnformatted("[engine: provide min/max/zero-frac in TensorStats]");
         ImGui::PopStyleColor();
-        EndSection(sec);
     }
     char hb[8]; std::snprintf(hb, sizeof hb, "%dh", s.model.nHeads);
     if (auto sec = BeginSection("Per-head attention norms", false, hb)) {
@@ -236,69 +260,139 @@ void DrawProbePanel(AppState& s, Model& m) {
             char hk[16]; std::snprintf(hk, sizeof hk, "%d.%d", s.activeLayer, h);
             const bool ab = s.ablatedHeads.contains(hk);
             const bool pr = s.probedHeads.contains(hk);
+            // [DATA HOOK] Model::getHeadNorm(layer, head) — magnitude of the
+            // head's contribution at the active layer (also drives arch-map
+            // tinting).
             const float v = m.getHeadNorm(s.activeLayer, h);
             ImGui::PushStyleColor(ImGuiCol_Button,        h == s.activeHead ? Sty().accent_bg : Sty().bg_input);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Sty().bg_input_hover);
             ImGui::PushStyleColor(ImGuiCol_Text,          ab ? Sty().bad : (pr ? Sty().accent : Sty().text));
-            char hl[16]; std::snprintf(hl, sizeof hl, "h%d  %.2f", h, v * 1.5f);
+            char hl[24];
+            if (std::isnan(v)) std::snprintf(hl, sizeof hl, "h%d  —", h);
+            else                std::snprintf(hl, sizeof hl, "h%d  %.2f", h, v * 1.5f);
             if (ImGui::Button(hl, ImVec2(80, 0))) s.setActiveHead(h);
             ImGui::PopStyleColor(3);
             ImGui::PopID();
             if ((h + 1) % 4 != 0) ImGui::SameLine();
         }
         ImGui::NewLine();
-        EndSection(sec);
+    }
+    if (auto sec = BeginSection("MLP feature activations", false, "top 8")) {
+        // [DATA HOOK] Model::getMlpFeatures(layer, k) — top-k MLP feature
+        // indices and their signed activations for this token.
+        const auto feats = m.getMlpFeatures(s.activeLayer, 8);
+        if (feats.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no MLP feature activations available");
+            ImGui::PopStyleColor();
+        } else if (ImGui::BeginTable("##feat", 3, ImGuiTableFlags_BordersInner)) {
+            ImGui::TableSetupColumn("idx",     ImGuiTableColumnFlags_WidthFixed, 46);
+            ImGui::TableSetupColumn("preview");
+            ImGui::TableSetupColumn("value",   ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableHeadersRow();
+            float maxv = 0.001f; for (const auto& f : feats) maxv = std::max(maxv, std::abs(f.value));
+            for (const auto& f : feats) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+                ImGui::Text("f%d", f.idx); ImGui::PopStyleColor();
+                ImGui::TableNextColumn(); Bar(std::abs(f.value) / maxv, 140, 6, Sty().warn);
+                ImGui::TableNextColumn(); ImGui::Text("%+.2f", double(f.value));
+            }
+            ImGui::EndTable();
+        }
     }
     ImGui::EndChild();
 }
 
-void DrawTokenStrip(AppState& s, Model&) {
+void DrawTokenStrip(AppState& s, Model& m) {
     DrawTitleBar("token_strip", "▦", nullptr, "tokstrip");
     if (!ImGui::BeginChild("##ts_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
     const std::size_t n = s.sampleTokens.size();
     std::vector<std::string_view> tk; tk.reserve(n);
     for (auto& t : s.sampleTokens) tk.emplace_back(t);
-    std::vector<float> loss(n);
-    for (std::size_t i = 0; i < n; ++i) loss[i] = std::abs(std::sin(i * 0.7f + s.activeLayer * 0.3f));
+
     if (auto sec = BeginSection("cross-entropy loss per token", false, "L?")) {
-        TokenGutter(tk, loss, HeatColor);
-        EndSection(sec);
+        // [DATA HOOK] Model::getTokenLossPerToken(layer) — per-token loss
+        // at the active layer.  Engine source: lm_head logits vs. the
+        // teacher-forced next-token target.
+        const auto loss = m.getTokenLossPerToken(s.activeLayer);
+        if (loss.empty() || tk.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no per-token loss available");
+            ImGui::PopStyleColor();
+        } else {
+            TokenGutter(tk, std::span{loss}, HeatColor);
+        }
     }
-    std::vector<float> diff(n);
-    for (std::size_t i = 0; i < n; ++i) diff[i] = std::sin(i * 0.7f) * 0.5f + 0.5f;
     if (auto sec = BeginSection("surprisal Δ vs base run", false, "diff")) {
-        TokenGutter(tk, diff, [](float v) { return DivergeColor(v * 2.0f - 1.0f); });
-        EndSection(sec);
+        // [DATA HOOK] Model::getSurprisalDelta() — per-token surprisal
+        // delta vs the baseline (un-ablated) forward pass.  Engine should
+        // run two passes (ablated + base) and subtract.
+        const auto diff = m.getSurprisalDelta();
+        if (diff.empty() || tk.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no surprisal delta available (need baseline)");
+            ImGui::PopStyleColor();
+        } else {
+            TokenGutter(tk, std::span{diff}, [](float v) { return DivergeColor(v * 2.0f - 1.0f); });
+        }
     }
     ImGui::EndChild();
 }
 
-void DrawProbeControls(AppState& s, Model&) {
+void DrawProbeControls(AppState& s, Model& m) {
     DrawTitleBar("probe_controls", "◎", nullptr, "probe-ctrl");
     if (!ImGui::BeginChild("##pc_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
     char nbuf[24]; std::snprintf(nbuf, sizeof nbuf, "%zu",
                                   s.probedHeads.size() + s.probedComponents.size());
     if (auto sec = BeginSection("Active probes", true, nbuf)) {
-        if (ImGui::BeginTable("##probes", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner)) {
-            ImGui::TableSetupColumn("type"); ImGui::TableSetupColumn("name"); ImGui::TableSetupColumn("acc", ImGuiTableColumnFlags_WidthFixed, 60);
+        // [DATA HOOK] Model::getActiveProbes() — probes currently attached
+        // to the model (engine-side, not the UI's pending probedHeads /
+        // probedComponents sets which represent user intent).
+        const auto probes = m.getActiveProbes();
+        if (probes.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no active probes");
+            ImGui::PopStyleColor();
+        } else if (ImGui::BeginTable("##probes", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner)) {
+            ImGui::TableSetupColumn("type"); ImGui::TableSetupColumn("name");
+            ImGui::TableSetupColumn("acc", ImGuiTableColumnFlags_WidthFixed, 60);
             ImGui::TableHeadersRow();
-            ImGui::TableNextRow(); ImGui::TableNextColumn(); Pill("L", "accent", true); ImGui::TableNextColumn(); ImGui::Text("linear/refusal_dir"); ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, Sty().good); ImGui::Text("0.91"); ImGui::PopStyleColor();
-            ImGui::TableNextRow(); ImGui::TableNextColumn(); Pill("P", "accent");       ImGui::TableNextColumn(); ImGui::Text("logistic/sentiment"); ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, Sty().good); ImGui::Text("0.84"); ImGui::PopStyleColor();
-            ImGui::TableNextRow(); ImGui::TableNextColumn(); Pill("S", "warn");         ImGui::TableNextColumn(); ImGui::Text("SAE/feature_2381");   ImGui::TableNextColumn(); ImGui::Text("0.62");
+            for (const auto& p : probes) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); Pill(p.type.c_str(), p.type_tone.c_str(), p.type_solid);
+                ImGui::TableNextColumn(); ImGui::Text("%s", p.name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Text, Sty().good);
+                ImGui::TextUnformatted(FmtFloat(p.accuracy, "%.2f").c_str());
+                ImGui::PopStyleColor();
+            }
             ImGui::EndTable();
         }
-        EndSection(sec);
     }
     if (auto sec = BeginSection("Steering vector", true, "ON")) {
-        KV({
-            { "source", "\"refusal\" prompts (n=128)", "" },
-            { "layer",  "L08.resid_post", "accent" },
-            { "α",      "+1.40", "warn" },
-            { "cos sim","0.873", "good" },
-        });
-        static float alpha = 1.4f;
-        ImSliderF("##alpha", alpha, -3.0f, 3.0f, "%.2f", ImGui::GetContentRegionAvail().x - 8);
-        EndSection(sec);
+        // [DATA HOOK] Model::getSteering() — current steering-vector config.
+        // Engine writes here when a steering vector is loaded (typically
+        // via `add_hook` on the residual stream).
+        const auto st = m.getSteering();
+        if (!st.active) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no steering vector loaded");
+            ImGui::PopStyleColor();
+        } else {
+            char alpha[16]; std::snprintf(alpha, sizeof alpha, "%+.2f", double(st.alpha));
+            KV({
+                { "source", Or(st.source), "" },
+                { "layer",  Or(st.layer),  "accent" },
+                { "α",      alpha,         "warn" },
+                { "cos sim",FmtFloat(st.cos_sim, "%.3f"), "good" },
+            });
+            // The slider here is purely UI intent — committed back to the
+            // engine via [DATA HOOK] Model::setSteering(alpha) (TBD).
+            static float alpha_ui = st.alpha;
+            ImSliderF("##alpha", alpha_ui, -3.0f, 3.0f, "%.2f",
+                      ImGui::GetContentRegionAvail().x - 8);
+        }
     }
     ImGui::EndChild();
 }
@@ -318,8 +412,7 @@ void DrawInferenceWorkspace(AppState& s, Model& m) {
     const float top_h    = H - bot_h - gap;
 
     ImGui::BeginChild("##inf_left", { left_w, H }, ImGuiChildFlags_Borders);
-    DrawResidualFlow(s, m);
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
+    DrawResidualFlow(s, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
 
     ImGui::BeginChild("##inf_center", { center_w, H });
     ImGui::BeginChild("##inf_fwd",   { center_w, top_h }, ImGuiChildFlags_Borders);
@@ -340,6 +433,9 @@ void DrawInferenceWorkspace(AppState& s, Model& m) {
         ImGui::BeginChild("##inf_raw", { rraw_w, H }, ImGuiChildFlags_Borders);
         DrawTitleBar("raw_tensor", "0x", "fp16", "raw");
         if (ImGui::BeginChild("##raw_body", ImVec2(0, 0))) {
+            // [DATA HOOK] Model::getActivation(layer, kind, n) — raw values
+            // for hex-view display.  Real backend: read the `resid_post`
+            // tensor for the active layer/token.
             const auto buf = m.getActivation(s.activeLayer, 0, 256);
             HexView(buf, 0, 4, 28, HexMode::Fp16);
             ImGui::EndChild();

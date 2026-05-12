@@ -12,6 +12,8 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
+#include "ui/colormap.hpp"
+#include "ui/fmt.hpp"
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
@@ -513,7 +515,6 @@ void DrawArchMap(AppState& s, Model& m) {
 
 // ── Inspector ──────────────────────────────────────────────────────────────
 void DrawInspector(AppState& s, Model& m) {
-    (void)m;
     DrawTitleBar("component_inspector", "◈", nullptr, "inspect");
     if (!ImGui::BeginChild("##insp_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
 
@@ -525,39 +526,93 @@ void DrawInspector(AppState& s, Model& m) {
     char dm[16];    std::snprintf(dm,   sizeof dm,   "%d", s.model.dMlp);
 
     if (auto sec = BeginSection(lbuf, true)) {
+        // ModelInfo (act / norm / rope) is checkpoint-static config —
+        // sourced from AppState.model which the engine populates on load.
+        // [DATA HOOK] expose model-config strings (act_fn, norm_kind,
+        // rope_theta) on ModelInfo when wiring a real backend.
         KV({
             { "layer",   l1, "accent" },
             { "d_model", d1, "" },
             { "n_heads", nh, "" },
             { "d_head",  dh, "" },
             { "d_mlp",   dm, "" },
-            { "act",     "SiLU (SwiGLU)", "" },
-            { "norm",    "RMSNorm pre",   "" },
-            { "rope θ",  "10000.0",       "" },
+            { "act",     "SiLU (SwiGLU)", "" },         // [DATA HOOK]
+            { "norm",    "RMSNorm pre",   "" },         // [DATA HOOK]
+            { "rope θ",  "10000.0",       "" },         // [DATA HOOK]
         });
-        EndSection(sec);
     }
 
     if (auto sec = BeginSection("Parameter breakdown", false, "block")) {
-        KV({
-            { "W_Q + W_K + W_V", "1.77M  (25%)", "info" },
-            { "W_O",             "0.59M  (8%)",  "info" },
-            { "W_in (gate+up)",  "3.15M  (44%)", "warn" },
-            { "W_out",           "1.57M  (22%)", "warn" },
-            { "norm × 2",        "1.5K   (0.02%)", "muted" },
-        });
-        EndSection(sec);
+        // [DATA HOOK] Model::getParamBreakdown(layer) — per-component
+        // parameter counts (in millions) + percent-of-block.
+        const auto rows = m.getParamBreakdown(s.activeLayer);
+        if (rows.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+            ImGui::TextUnformatted("// no breakdown available");
+            ImGui::PopStyleColor();
+        } else {
+            std::vector<KVRow> kv; kv.reserve(rows.size());
+            std::vector<std::string> values; values.reserve(rows.size());
+            for (const auto& r : rows) {
+                char buf[40];
+                if (r.params_M < 0.01f)
+                    std::snprintf(buf, sizeof buf, "%.0fK  (%.2f%%)",
+                                  double(r.params_M * 1000.0f), double(r.pct * 100.0f));
+                else
+                    std::snprintf(buf, sizeof buf, "%.2fM  (%.0f%%)",
+                                  double(r.params_M), double(r.pct * 100.0f));
+                values.emplace_back(buf);
+            }
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                kv.push_back({ rows[i].component.c_str(), values[i], rows[i].tone });
+            }
+            // KV() takes initializer_list which can't take a runtime-sized
+            // vector; render the rows manually instead.
+            if (ImGui::BeginTable("##pbk", 2, ImGuiTableFlags_NoHostExtendX |
+                                              ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, 130);
+                ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch);
+                for (std::size_t i = 0; i < rows.size(); ++i) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                        rows[i].tone && *rows[i].tone ? ToneColor(rows[i].tone) : Sty().text_muted);
+                    ImGui::TextUnformatted(rows[i].component.c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::TableNextColumn();
+                    const float cw = ImGui::GetContentRegionAvail().x;
+                    const ImVec2 sz = ImGui::CalcTextSize(values[i].c_str());
+                    if (sz.x < cw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cw - sz.x));
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                        rows[i].tone && *rows[i].tone ? ToneColor(rows[i].tone) : Sty().text);
+                    ImGui::TextUnformatted(values[i].c_str());
+                    ImGui::PopStyleColor();
+                }
+                ImGui::EndTable();
+            }
+        }
     }
 
     if (auto sec = BeginSection("Live activations", false, "∂fwd")) {
+        // [DATA HOOK] Model::getLiveActivations(layer) — per-layer live
+        // activation norms + entropy + dead-neuron count for the active
+        // layer.  Engine source: forward-hook output captured on the
+        // current token.
+        const auto a = m.getLiveActivations(s.activeLayer);
+        char dn[32];
+        if (a.dead_neurons == kNoInt || a.total_neurons == kNoInt)
+            std::snprintf(dn, sizeof dn, "—");
+        else
+            std::snprintf(dn, sizeof dn, "%d / %d", a.dead_neurons, a.total_neurons);
+        const std::string entropy = std::isnan(a.attn_entropy_avg)
+            ? "—" : (FmtFloat(a.attn_entropy_avg, "%.2f") + " nats");
         KV({
-            { "attn_out norm",   "1.42",  "info" },
-            { "mlp_out norm",    "0.84",  "warn" },
-            { "resid_post norm", "14.83", "accent" },
-            { "attn entropy avg","1.87 nats", "" },
-            { "dead neurons",    "14 / 3072", "warn" },
+            { "attn_out norm",    FmtFloat(a.attn_out_norm,   "%.2f"), "info" },
+            { "mlp_out norm",     FmtFloat(a.mlp_out_norm,    "%.2f"), "warn" },
+            { "resid_post norm",  FmtFloat(a.resid_post_norm, "%.2f"), "accent" },
+            { "attn entropy avg", entropy,                             "" },
+            { "dead neurons",     dn,                                   "warn" },
         });
-        EndSection(sec);
     }
     ImGui::EndChild();
 }
@@ -568,7 +623,8 @@ void DrawDist(AppState& s, Model& m) {
     if (!ImGui::BeginChild("##dist_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
     if (auto sec = BeginSection("weight magnitudes per component", true)) {
         const char* names[] = { "W_Q","W_K","W_V","W_O","W_in (gate)","W_in (up)","W_out","norm.γ" };
-        const char* keys [] = { "W_Q","W_K","W_V","W_O","W_in_gate","W_in_up","W_out","norm" };
+        const char* keys [] = { "attn.W_Q","attn.W_K","attn.W_V","attn.W_O",
+                                 "mlp.W_in_gate","mlp.W_in_up","mlp.W_out","norm1" };
         const ImU32 cols[] = { Sty().info, Sty().info, Sty().info, Sty().info,
                                 Sty().warn, Sty().warn, Sty().warn, Sty().text_muted };
         const float child_w = (ImGui::GetContentRegionAvail().x - 4 * 8) / 4.0f;
@@ -577,12 +633,23 @@ void DrawDist(AppState& s, Model& m) {
             ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
             ImGui::TextUnformatted(names[i]);
             ImGui::PopStyleColor();
-            const auto bins = m.getWeightHistogram(s.activeLayer, keys[i], 30);
-            ActivationHistogram(bins, child_w - 4, 60, cols[i]);
+            // [DATA HOOK] Model::getWeightHistogram(name, bins) — bin counts
+            // for the named tensor's value distribution.  Tensor name is
+            // built as `blocks.<L>.<component>.weight`.
+            char tname[64];
+            std::snprintf(tname, sizeof tname,
+                          "blocks.%d.%s.weight", s.activeLayer, keys[i]);
+            const auto bins = m.getWeightHistogram(tname, 30);
+            if (bins.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_dim);
+                ImGui::TextUnformatted("// no data");
+                ImGui::PopStyleColor();
+            } else {
+                ActivationHistogram(bins, child_w - 4, 60, cols[i]);
+            }
             ImGui::EndGroup();
             if (i % 4 != 3) ImGui::SameLine();
         }
-        EndSection(sec);
     }
     ImGui::EndChild();
 }
@@ -621,8 +688,19 @@ void DrawRawHex(AppState& s, Model& m) {
     char flag[16]; std::snprintf(flag, sizeof flag, "W_Q[L%02d]", s.activeLayer);
     DrawTitleBar("param_hex", "0x", flag, "param-hex");
     if (!ImGui::BeginChild("##rawhex_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
-    const auto buf = m.getWeightSlice(s.activeLayer, "W_Q", 0, 200);
-    HexView(buf, 0, 3, 28, HexMode::Fp16);
+    // [DATA HOOK] Model::getWeightSlice(name, offset, n) — n raw fp16
+    // values from the named tensor starting at `offset`.  Engine reads
+    // straight from the checkpoint tensor (mmap'd ideally).
+    char tname[64]; std::snprintf(tname, sizeof tname,
+                                   "blocks.%d.attn.W_Q.weight", s.activeLayer);
+    const auto buf = m.getWeightSlice(tname, 0, 200);
+    if (buf.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+        ImGui::TextUnformatted("// no tensor data available");
+        ImGui::PopStyleColor();
+    } else {
+        HexView(buf, 0, 3, 28, HexMode::Fp16);
+    }
     ImGui::EndChild();
 }
 
