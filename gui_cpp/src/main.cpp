@@ -214,6 +214,45 @@ int main() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+    // Fonts: Ubuntu Mono as the primary face (matches the mock's tracy /
+    // photoshop / amber feel — sharp + technical), with Noto Sans Symbols2
+    // merged in for the geometric / arrow / math glyphs Ubuntu Mono lacks
+    // (◫ ▶ ▦ ◈ ∿ ◆ ≡ █ ↑↓←→ ⊕ ⊘ ⌬ ❄ ⚙ ⚲ etc).
+    static const ImWchar kSymbolRanges[] = {
+        0x0020, 0x00FF,   // Basic Latin + Latin-1 Supplement
+        0x2010, 0x205F,   // General Punctuation
+        0x2190, 0x21FF,   // Arrows
+        0x2200, 0x22FF,   // Mathematical Operators
+        0x2300, 0x23FF,   // Miscellaneous Technical
+        0x2500, 0x257F,   // Box Drawing
+        0x2580, 0x259F,   // Block Elements
+        0x25A0, 0x25FF,   // Geometric Shapes
+        0x2600, 0x26FF,   // Miscellaneous Symbols
+        0x2700, 0x27BF,   // Dingbats
+        0,
+    };
+    const float kFontSize = 14.0f;
+    const char* kPrimary  = "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf";
+    // Two symbol fallbacks: DejaVu Sans Mono covers arrows / common math /
+    // misc-technical with stable monospace metrics; Noto Sans Symbols2 fills
+    // the geometric-shape and dingbat gaps DejaVu lacks.  Merge order matters
+    // — earlier entries win; DejaVu first so arrows take its arrow glyph.
+    const char* kFallbacks[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+        nullptr,
+    };
+    if (io.Fonts->AddFontFromFileTTF(kPrimary, kFontSize, nullptr, kSymbolRanges)) {
+        ImFontConfig merge{};
+        merge.MergeMode = true;
+        for (const char** fp = kFallbacks; *fp; ++fp) {
+            io.Fonts->AddFontFromFileTTF(*fp, kFontSize, &merge, kSymbolRanges);
+        }
+    } else {
+        std::fprintf(stderr, "[font] Ubuntu Mono not found at %s — using ImGui default\n",
+                     kPrimary);
+    }
+
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init("#version 130");
 
