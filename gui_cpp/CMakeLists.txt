@@ -1,0 +1,70 @@
+cmake_minimum_required(VERSION 3.20)
+project(llobotomy CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug)
+endif()
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+find_package(PkgConfig REQUIRED)
+# IMPORTED_TARGET pulls in transitive deps (X11, dl, pthread...) on Linux.
+pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET glfw3)
+find_package(OpenGL REQUIRED)
+
+# Vendored Dear ImGui (libs/imgui, v1.92.7 docking).
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/imgui)
+add_library(imgui STATIC
+  ${IMGUI_DIR}/imgui.cpp
+  ${IMGUI_DIR}/imgui_demo.cpp
+  ${IMGUI_DIR}/imgui_draw.cpp
+  ${IMGUI_DIR}/imgui_tables.cpp
+  ${IMGUI_DIR}/imgui_widgets.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui SYSTEM PUBLIC
+  ${IMGUI_DIR} ${IMGUI_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC OpenGL::GL PkgConfig::GLFW)
+# Local libglfw3.a is static — explicitly add its transitive Linux deps so
+# the linker can resolve X11 / threading / dl symbols.
+if(UNIX AND NOT APPLE)
+  find_package(Threads REQUIRED)
+  find_package(X11 REQUIRED)
+  target_link_libraries(imgui PUBLIC ${X11_LIBRARIES} Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+# ---------------------------------------------------------------------------
+# llobotomy executable
+# ---------------------------------------------------------------------------
+add_executable(llobotomy
+  src/main.cpp
+  src/style.cpp
+  src/appstate.cpp
+  src/model/mock_model.cpp
+  src/ui/colormap.cpp
+  src/ui/chrome.cpp
+  src/ui/widgets.cpp
+  src/workspaces/architecture.cpp
+  src/workspaces/inference.cpp
+  src/workspaces/attention.cpp
+  src/workspaces/probes.cpp
+  src/workspaces/training.cpp
+  src/workspaces/finetune.cpp
+  src/workspaces/datasets.cpp
+  src/workspaces/raw_tensors.cpp
+  src/workspaces/logs.cpp
+)
+target_include_directories(llobotomy PRIVATE src libs)
+target_link_libraries(llobotomy PRIVATE imgui)
+target_compile_options(llobotomy PRIVATE
+  -Wall -Wextra -Wpedantic
+  -Wno-c99-designator
+)
