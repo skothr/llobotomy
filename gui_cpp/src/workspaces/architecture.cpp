@@ -298,6 +298,11 @@ void DrawArchMap(AppState& s, Model& m) {
                     0, 0, isActive ? 1.5f : 1.0f);
 
         // Body click — collapsed→expand+focus, expanded→focus only.
+        // SetNextItemAllowOverlap so the smaller InvisibleButtons we submit
+        // afterwards (head cells, component cells, mini-head bar) properly
+        // steal hover from the body when the cursor is on top of them — else
+        // every click on a head/component would also fire body's handler.
+        ImGui::SetNextItemAllowOverlap();
         ImGui::SetCursorScreenPos(P(cols.label.x, y0));
         ImGui::InvisibleButton("body", { (cols.blockW) * Z, h * Z });
         if (ImGui::IsItemClicked() && !isSkipped) {
