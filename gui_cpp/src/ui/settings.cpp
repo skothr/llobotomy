@@ -205,6 +205,15 @@ void DrawSettingsModal(AppState& s, bool request_open) {
         return;
     }
 
+    // Esc closes the modal — ImGui doesn't do this for popups by default
+    // (it only clears the focused item / window).  Standard expectation
+    // across editors though, so wire it explicitly.
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
     bool dirty = false;
 
     // ── Theme ─────────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -36,21 +37,23 @@ void glfw_error(int err, const char* desc) {
     LLOB_LOG_WARN("glfw", "error %d: %s", err, desc);
 }
 
-// Menu intents — DrawMenubar collects the user's clicks here so the main
-// loop can dispatch into the matching modal/dialog/action.  Keeping this in
-// one struct lets future polish phases (file dialogs, About) add slots
-// without re-threading the menubar signature.
+// Menu intents — DrawMenubar AND HandleShortcuts both populate this so the
+// main loop has a single dispatch surface.  Keeping it in one struct lets
+// future polish phases (file dialogs, About) add slots without re-threading
+// the menubar/shortcut signatures.
 struct MenuActions {
     bool open_settings = false;
     bool open_about    = false;
     bool open_ckpt     = false;
     bool save_probe    = false;
     bool export_state  = false;
+    bool new_project   = false;     // Ctrl+T — emulate the + tab button
+    bool close_project = false;     // Ctrl+W — close active project tab
+    bool quit          = false;     // Ctrl+Q
 };
 
-MenuActions DrawMenubar(llob::AppState& s, llob::Model& m) {
+MenuActions DrawMenubar(llob::AppState& s, llob::Model& m, MenuActions act) {
     using namespace llob;
-    MenuActions act{};
     if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
         ImGui::TextUnformatted("\xE2\x96\x91 llobotomy");      // ░
@@ -61,7 +64,10 @@ MenuActions DrawMenubar(llob::AppState& s, llob::Model& m) {
             if (ImGui::MenuItem("Save probe set…",  "Ctrl+S")) act.save_probe   = true;
             if (ImGui::MenuItem("Export state…",    "Ctrl+E")) act.export_state = true;
             ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Ctrl+Q")) std::exit(0);
+            if (ImGui::MenuItem("New project",   "Ctrl+T")) act.new_project   = true;
+            if (ImGui::MenuItem("Close project", "Ctrl+W")) act.close_project = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Ctrl+Q")) act.quit = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Edit"))   { ImGui::MenuItem("Undo", "Ctrl+Z"); ImGui::MenuItem("Redo"); ImGui::EndMenu(); }
@@ -183,13 +189,18 @@ void DrawProjectTabs(llob::AppState& s) {
         // hashed solely on the label, which collided every time the + button
         // produced a second "untitled".
         std::size_t closed_idx = SIZE_MAX;
+        // Only update activeProject when the user actually clicks a tab
+        // (IsItemActivated fires once per click).  When SetSelected forces
+        // a new tab into focus, ImGui may briefly report the OLD tab as
+        // open this frame — without this gate, our previous code would
+        // overwrite the just-set activeProject and snap back.
         for (std::size_t i = 0; i < s.projects.size(); ++i) {
             auto& p = s.projects[i];
             ImGui::PushID(p.id.c_str());
             ImGuiTabItemFlags flags = (p.id == s.activeProject) ? ImGuiTabItemFlags_SetSelected : 0;
             bool open = true;
             if (ImGui::BeginTabItem(p.name.c_str(), &open, flags)) {
-                s.activeProject = p.id;
+                if (ImGui::IsItemActivated()) s.activeProject = p.id;
                 ImGui::EndTabItem();
             }
             ImGui::PopID();
@@ -242,17 +253,60 @@ void DrawWorkspaceTabRow(llob::AppState& s) {
     }
 }
 
-void HandleShortcuts(llob::AppState& s) {
+// Pump keyboard shortcuts.  Ctrl-chords work even when text input has focus
+// (standard editor convention); bare keys (Up/Down/Space/1-9) are gated on
+// !typing so they don't fight a focused input box.  Some shortcuts populate
+// MenuActions for the main loop to dispatch (consistent with menu clicks);
+// others (workspace cycle, layer/token nudge) mutate AppState directly
+// because there's no menu equivalent.
+void HandleShortcuts(llob::AppState& s, MenuActions& act) {
     using namespace llob;
-    if (ImGui::GetIO().WantTextInput) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool ctrl   = io.KeyCtrl;
+    const bool shift  = io.KeyShift;
+    const bool typing = io.WantTextInput;
+
+    // Ctrl-chord shortcuts — fire even during text input
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Comma))  act.open_settings = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O))      act.open_ckpt     = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S))      act.save_probe    = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_E))      act.export_state  = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_T))      act.new_project   = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_W))      act.close_project = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Q))      act.quit          = true;
+
+    // Cycle workspace via Ctrl+Tab / Ctrl+Shift+Tab (browser-style)
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Tab)) {
+        int next = static_cast<int>(s.activeWs) + (shift ? -1 : +1);
+        if (next < 0) next = kNumWorkspaces - 1;
+        if (next >= kNumWorkspaces) next = 0;
+        s.activeWs = static_cast<Workspace>(next);
+        LLOB_LOG_DEBUG("ws", "cycled (%s) -> %s",
+                       shift ? "back" : "fwd", WsDef(s.activeWs).short_label);
+    }
+    // Direct workspace jump via Ctrl+1..9
+    if (ctrl) {
+        for (int i = 0; i < kNumWorkspaces && i < 9; ++i) {
+            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(int(ImGuiKey_1) + i))) {
+                s.activeWs = static_cast<Workspace>(i);
+                LLOB_LOG_DEBUG("ws", "Ctrl+%d -> %s", i + 1, WsDef(s.activeWs).short_label);
+            }
+        }
+    }
+
+    // Bare-key shortcuts only when not typing
+    if (typing) return;
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))    s.setActiveLayer(s.activeLayer - 1);
     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))  s.setActiveLayer(s.activeLayer + 1);
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))  s.setActiveToken(s.activeToken - 1);
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) s.setActiveToken(s.activeToken + 1);
     if (ImGui::IsKeyPressed(ImGuiKey_Space))      s.running = !s.running;
-    for (int i = 0; i < kNumWorkspaces; ++i) {
-        if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(int(ImGuiKey_1) + i))) {
-            s.activeWs = static_cast<Workspace>(i);
+    if (!ctrl) {
+        for (int i = 0; i < kNumWorkspaces; ++i) {
+            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(int(ImGuiKey_1) + i))) {
+                s.activeWs = static_cast<Workspace>(i);
+                LLOB_LOG_DEBUG("ws", "key %d -> %s", i + 1, WsDef(s.activeWs).short_label);
+            }
         }
     }
 }
@@ -404,12 +458,40 @@ int main() {
         for (const auto& e : model.drainEngineLogs()) {
             llob::LoggerPush(e.sev, e.kind, e.msg);
         }
-        HandleShortcuts(s);
-        const MenuActions menu = DrawMenubar(s, model);
+        // Shortcuts populate the action struct; menu clicks add to it.
+        MenuActions menu{};
+        HandleShortcuts(s, menu);
+        menu = DrawMenubar(s, model, menu);
+
+        // Dispatch wired actions
         llob::DrawSettingsModal(s, menu.open_settings);
+        if (menu.quit) glfwSetWindowShouldClose(win, GLFW_TRUE);
+        if (menu.new_project) {
+            // Same logic as the + button — monotonic suffix keeps id +
+            // display name unique so duplicates don't collide on ImGui IDs.
+            static int next_untitled_kb = 1;
+            char id_buf[32], name_buf[32];
+            std::snprintf(id_buf,   sizeof id_buf,   "p_kb_untitled_%d", next_untitled_kb);
+            std::snprintf(name_buf, sizeof name_buf, "untitled-%d",      next_untitled_kb);
+            ++next_untitled_kb;
+            s.projects.push_back({ id_buf, name_buf, llob::ProjectTab::Dot::Dim, "" });
+            s.activeProject = id_buf;
+            LLOB_LOG_INFO("project", "new project %s", name_buf);
+        }
+        if (menu.close_project && !s.projects.empty()) {
+            LLOB_LOG_DEBUG("project", "close requested; activeProject=%s",
+                           s.activeProject.empty() ? "(none)" : s.activeProject.c_str());
+            auto it = std::find_if(s.projects.begin(), s.projects.end(),
+                                   [&](const llob::ProjectTab& p){ return p.id == s.activeProject; });
+            if (it != s.projects.end()) {
+                const std::string name = it->name;
+                s.projects.erase(it);
+                s.activeProject = s.projects.empty() ? "" : s.projects.front().id;
+                LLOB_LOG_INFO("project", "closed %s", name.c_str());
+            }
+        }
         // Phase 3 will dispatch menu.open_ckpt / save_probe / export_state
-        // and Phase 7 menu.open_about.  No-op for now — the bools are
-        // captured so the menu items don't silently swallow the click.
+        // and Phase 7 menu.open_about.
         (void)menu.open_about; (void)menu.open_ckpt;
         (void)menu.save_probe; (void)menu.export_state;
 
