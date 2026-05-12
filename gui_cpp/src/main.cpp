@@ -45,14 +45,15 @@ void glfw_error(int err, const char* desc) {
 // future polish phases (file dialogs, About) add slots without re-threading
 // the menubar/shortcut signatures.
 struct MenuActions {
-    bool open_settings = false;
-    bool open_about    = false;
-    bool open_ckpt     = false;
-    bool save_probe    = false;
-    bool export_state  = false;
-    bool new_project   = false;     // Ctrl+T — emulate the + tab button
-    bool close_project = false;     // Ctrl+W — close active project tab
-    bool quit          = false;     // Ctrl+Q
+    bool open_settings    = false;
+    bool open_keybindings = false;
+    bool open_about       = false;
+    bool open_ckpt        = false;
+    bool save_probe       = false;
+    bool export_state     = false;
+    bool new_project      = false;  // Ctrl+T — emulate the + tab button
+    bool close_project    = false;  // Ctrl+W — close active project tab
+    bool quit             = false;  // Ctrl+Q
 };
 
 MenuActions DrawMenubar(llob::AppState& s, llob::Model& m, MenuActions act) {
@@ -78,7 +79,8 @@ MenuActions DrawMenubar(llob::AppState& s, llob::Model& m, MenuActions act) {
         if (ImGui::BeginMenu("Probe"))  { ImGui::MenuItem("Train new probe…"); ImGui::MenuItem("Library"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Run"))    { ImGui::MenuItem("Run / Pause", "Space"); ImGui::MenuItem("Step"); ImGui::MenuItem("Reset"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Settings…", "Ctrl+,")) act.open_settings = true;
+            if (ImGui::MenuItem("Settings…",      "Ctrl+,")) act.open_settings    = true;
+            if (ImGui::MenuItem("Key bindings…"))             act.open_keybindings = true;
             ImGui::Separator();
             ImGui::MenuItem("Show raw pane", nullptr, &s.showRaw);
             ImGui::MenuItem("Animate live data", nullptr, &s.liveAnim);
@@ -256,64 +258,60 @@ void DrawWorkspaceTabRow(llob::AppState& s) {
     }
 }
 
-// Pump keyboard shortcuts.  Ctrl-chords work even when text input has focus
-// (standard editor convention); bare keys (Up/Down/Space/1-9) are gated on
-// !typing so they don't fight a focused input box.  Some shortcuts populate
-// MenuActions for the main loop to dispatch (consistent with menu clicks);
-// others (workspace cycle, layer/token nudge) mutate AppState directly
-// because there's no menu equivalent.
+// Pump keyboard shortcuts.  Every binding now flows through s.bindings —
+// users can edit them via View ▸ Key bindings…  Bare-key chords (no Ctrl/
+// Alt) are auto-suppressed while a text input has focus; modifier chords
+// fire regardless (standard editor convention).  Suppressed entirely
+// during a chord-capture so the rebind UI sees keypresses cleanly.
 void HandleShortcuts(llob::AppState& s, MenuActions& act) {
     using namespace llob;
-    const ImGuiIO& io = ImGui::GetIO();
-    const bool ctrl   = io.KeyCtrl;
-    const bool shift  = io.KeyShift;
-    const bool typing = io.WantTextInput;
+    if (IsCapturingKeybind()) return;
+    const auto& kb = s.bindings;
 
-    // Ctrl-chord shortcuts — fire even during text input
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Comma))  act.open_settings = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O))      act.open_ckpt     = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_S))      act.save_probe    = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_E))      act.export_state  = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_T))      act.new_project   = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_W))      act.close_project = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Q))      act.quit          = true;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_0) && s.activeWs == Workspace::Arch) {
-        s.archRequestFit = true;
-    }
+    // Menu actions
+    if (kb.Pressed(Action::OpenSettings))    act.open_settings    = true;
+    if (kb.Pressed(Action::OpenAbout))       act.open_about       = true;
+    if (kb.Pressed(Action::OpenCheckpoint))  act.open_ckpt        = true;
+    if (kb.Pressed(Action::SaveProbe))       act.save_probe       = true;
+    if (kb.Pressed(Action::ExportState))     act.export_state     = true;
+    if (kb.Pressed(Action::NewProject))      act.new_project      = true;
+    if (kb.Pressed(Action::CloseProject))    act.close_project    = true;
+    if (kb.Pressed(Action::Quit))            act.quit             = true;
 
-    // Cycle workspace via Ctrl+Tab / Ctrl+Shift+Tab (browser-style)
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Tab)) {
-        int next = static_cast<int>(s.activeWs) + (shift ? -1 : +1);
+    // Workspace navigation
+    if (kb.Pressed(Action::PrevWorkspace)) {
+        int next = static_cast<int>(s.activeWs) - 1;
         if (next < 0) next = kNumWorkspaces - 1;
-        if (next >= kNumWorkspaces) next = 0;
         s.activeWs = static_cast<Workspace>(next);
-        LLOB_LOG_DEBUG("ws", "cycled (%s) -> %s",
-                       shift ? "back" : "fwd", WsDef(s.activeWs).short_label);
+        LLOB_LOG_DEBUG("ws", "prev -> %s", WsDef(s.activeWs).short_label);
     }
-    // Direct workspace jump via Ctrl+1..9
-    if (ctrl) {
-        for (int i = 0; i < kNumWorkspaces && i < 9; ++i) {
-            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(int(ImGuiKey_1) + i))) {
-                s.activeWs = static_cast<Workspace>(i);
-                LLOB_LOG_DEBUG("ws", "Ctrl+%d -> %s", i + 1, WsDef(s.activeWs).short_label);
-            }
+    if (kb.Pressed(Action::NextWorkspace)) {
+        int next = (static_cast<int>(s.activeWs) + 1) % kNumWorkspaces;
+        s.activeWs = static_cast<Workspace>(next);
+        LLOB_LOG_DEBUG("ws", "next -> %s", WsDef(s.activeWs).short_label);
+    }
+    for (int i = 0; i < 9 && i < kNumWorkspaces; ++i) {
+        const Action a = static_cast<Action>(static_cast<int>(Action::Workspace1) + i);
+        if (kb.Pressed(a)) {
+            s.activeWs = static_cast<Workspace>(i);
+            LLOB_LOG_DEBUG("ws", "kb -> %s", WsDef(s.activeWs).short_label);
         }
     }
 
-    // Bare-key shortcuts only when not typing
-    if (typing) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))    s.setActiveLayer(s.activeLayer - 1);
-    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))  s.setActiveLayer(s.activeLayer + 1);
-    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))  s.setActiveToken(s.activeToken - 1);
-    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) s.setActiveToken(s.activeToken + 1);
-    if (ImGui::IsKeyPressed(ImGuiKey_Space))      s.running = !s.running;
-    if (!ctrl) {
-        for (int i = 0; i < kNumWorkspaces; ++i) {
-            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(int(ImGuiKey_1) + i))) {
-                s.activeWs = static_cast<Workspace>(i);
-                LLOB_LOG_DEBUG("ws", "key %d -> %s", i + 1, WsDef(s.activeWs).short_label);
-            }
-        }
+    // Editor (selection nudges + run toggle)
+    if (kb.Pressed(Action::NudgeLayerUp))    s.setActiveLayer(s.activeLayer - 1);
+    if (kb.Pressed(Action::NudgeLayerDown))  s.setActiveLayer(s.activeLayer + 1);
+    if (kb.Pressed(Action::NudgeTokenLeft))  s.setActiveToken(s.activeToken - 1);
+    if (kb.Pressed(Action::NudgeTokenRight)) s.setActiveToken(s.activeToken + 1);
+    if (kb.Pressed(Action::ToggleRun))       s.running = !s.running;
+
+    // View — workspace-layout reset + arch fit
+    if (kb.Pressed(Action::ResetWorkspaceLayout)) {
+        ResetWorkspaceLayout(WsDef(s.activeWs).short_label);
+        LLOB_LOG_INFO("ws", "reset layout for %s", WsDef(s.activeWs).short_label);
+    }
+    if (kb.Pressed(Action::FitArchMap) && s.activeWs == Workspace::Arch) {
+        s.archRequestFit = true;
     }
 }
 
@@ -441,6 +439,7 @@ int main() {
     // SettingsLoad applies the persisted theme/density/accent itself
     // (calls ApplyStyle internally), so no explicit BuildStyle here.
     llob::SettingsLoad(s);
+    s.bindings.Load();
 #if LLOB_USE_MOCK_DATA
     s.seedMockData();
 #endif
@@ -470,8 +469,9 @@ int main() {
         menu = DrawMenubar(s, model, menu);
 
         // Dispatch wired actions
-        llob::DrawSettingsModal(s, menu.open_settings);
-        llob::DrawAboutDialog  (s, menu.open_about);
+        llob::DrawSettingsModal   (s, menu.open_settings);
+        llob::DrawKeybindingsModal(s, menu.open_keybindings);
+        llob::DrawAboutDialog     (s, menu.open_about);
         if (menu.quit) glfwSetWindowShouldClose(win, GLFW_TRUE);
         if (menu.new_project) {
             // Same logic as the + button — monotonic suffix keeps id +

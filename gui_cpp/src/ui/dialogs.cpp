@@ -1,5 +1,6 @@
 #include "ui/dialogs.hpp"
 
+#include "keybindings.hpp"
 #include "logger.hpp"
 #include "style.hpp"
 
@@ -7,6 +8,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 namespace llob {
 
@@ -96,6 +98,171 @@ void DrawAboutDialog(const AppState& s, bool request_open) {
     }
     ImGui::SameLine();
     if (ImGui::Button("close", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+}
+
+// ── Keybindings modal ──────────────────────────────────────────────────────
+namespace {
+
+// Tracks which (action, slot) the user is currently rebinding.  Both -1
+// when no capture is in flight.  Static here is fine — only one modal can
+// be open at a time anyway.
+struct CaptureState {
+    int action = -1;     // Action enum value
+    int slot   = -1;     // 0 = primary, 1 = secondary
+    bool active() const { return action >= 0 && slot >= 0; }
+    void clear()        { action = slot = -1; }
+};
+CaptureState& Capture() { static CaptureState c; return c; }
+
+// Pull the next non-modifier ImGuiKey that's currently pressed, if any.
+// Returns ImGuiKey_None when nothing usable is down (or only modifiers).
+ImGuiKey FirstNonModifierPressed() {
+    for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+        const auto key = static_cast<ImGuiKey>(k);
+        // Skip modifier keys themselves — the chord captures their state
+        // via io.Key{Ctrl,Shift,Alt}.  Mod keys would get captured first
+        // because they're held during the chord.
+        switch (key) {
+            case ImGuiKey_LeftCtrl:  case ImGuiKey_RightCtrl:
+            case ImGuiKey_LeftShift: case ImGuiKey_RightShift:
+            case ImGuiKey_LeftAlt:   case ImGuiKey_RightAlt:
+            case ImGuiKey_LeftSuper: case ImGuiKey_RightSuper:
+            case ImGuiKey_ReservedForModCtrl: case ImGuiKey_ReservedForModShift:
+            case ImGuiKey_ReservedForModAlt:  case ImGuiKey_ReservedForModSuper:
+                continue;
+            default: break;
+        }
+        if (ImGui::IsKeyPressed(key, /*repeat=*/false)) return key;
+    }
+    return ImGuiKey_None;
+}
+
+}  // namespace
+
+bool IsCapturingKeybind() { return Capture().active(); }
+
+void DrawKeybindingsModal(AppState& s, bool request_open) {
+    if (request_open) ImGui::OpenPopup("keybindings##modal");
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos (center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(620, 520), ImGuiCond_Appearing);
+
+    if (!ImGui::BeginPopupModal("keybindings##modal", nullptr,
+                                ImGuiWindowFlags_NoCollapse)) {
+        return;
+    }
+    // Esc closes — UNLESS we're capturing a chord (Esc cancels capture).
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (Capture().active()) {
+            Capture().clear();
+        } else {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+            return;
+        }
+    }
+
+    // If a capture is in flight, watch for the next non-modifier press
+    // and bind it.  ImGui::IsKeyPressed gives us per-frame edge detection,
+    // so a single keypress doesn't spam-rebind across frames.
+    if (Capture().active()) {
+        const ImGuiIO& io = ImGui::GetIO();
+        const ImGuiKey k = FirstNonModifierPressed();
+        if (k != ImGuiKey_None) {
+            KeyChord c;
+            c.ctrl  = io.KeyCtrl;
+            c.shift = io.KeyShift;
+            c.alt   = io.KeyAlt;
+            c.key   = k;
+            s.bindings.chords[Capture().action][Capture().slot] = c;
+            s.bindings.Save();
+            LLOB_LOG_INFO("kb", "rebound %s [%s] → %s",
+                          ActionLabel(static_cast<Action>(Capture().action)),
+                          Capture().slot == 0 ? "primary" : "secondary",
+                          FormatChord(c).c_str());
+            Capture().clear();
+        }
+    }
+
+    // ── Header ─────────────────────────────────────────────────────────
+    ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+    ImGui::TextWrapped(
+        "Click any chord to rebind. Esc cancels an in-flight capture; press "
+        "Reset to restore defaults. Bindings persist to %s.",
+        Keybindings::Path().c_str());
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+
+    if (ImGui::Button("reset all to defaults")) {
+        s.bindings = Keybindings::Defaults();
+        s.bindings.Save();
+        LLOB_LOG_INFO("kb", "bindings reset to defaults");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("close", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+    // ── Table ──────────────────────────────────────────────────────────
+    if (ImGui::BeginTable("##kb", 3,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                          ImGuiTableFlags_ScrollY)) {
+        ImGui::TableSetupColumn("ACTION",    ImGuiTableColumnFlags_WidthStretch, 0.55f);
+        ImGui::TableSetupColumn("PRIMARY",   ImGuiTableColumnFlags_WidthStretch, 0.225f);
+        ImGui::TableSetupColumn("SECONDARY", ImGuiTableColumnFlags_WidthStretch, 0.225f);
+        ImGui::TableHeadersRow();
+
+        int n = 0;
+        const auto* descs = AllActions(n);
+        const char* prev_group = nullptr;
+        for (int i = 0; i < n; ++i) {
+            const auto& d = descs[i];
+            // Group separator row
+            if (!prev_group || std::strcmp(prev_group, d.group) != 0) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
+                ImGui::TextUnformatted(d.group);
+                ImGui::PopStyleColor();
+                prev_group = d.group;
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(d.label);
+
+            for (int slot = 0; slot < 2; ++slot) {
+                ImGui::TableSetColumnIndex(1 + slot);
+                ImGui::PushID(i * 2 + slot);
+
+                const auto& chord  = s.bindings.chords[i][slot];
+                const std::string label = FormatChord(chord);
+                const bool capturing = (Capture().action == i && Capture().slot == slot);
+                const char* button_label = capturing ? "press a key…" : label.c_str();
+
+                if (capturing) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, Sty().accent_bg_strong);
+                }
+                if (ImGui::Button(button_label, ImVec2(-FLT_MIN, 0))) {
+                    Capture().action = i;
+                    Capture().slot   = slot;
+                }
+                if (capturing) ImGui::PopStyleColor();
+                if (ImGui::BeginPopupContextItem("##chord_ctx")) {
+                    if (ImGui::MenuItem("clear")) {
+                        s.bindings.chords[i][slot] = {};
+                        s.bindings.Save();
+                    }
+                    ImGui::EndPopup();
+                }
+
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
 
     ImGui::EndPopup();
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "keybindings.hpp"
 #include "style.hpp"
 
 #include <imgui.h>
@@ -105,6 +106,9 @@ struct AppState {
     ImU32                     accentOverride = 0;     // 0 = use theme default
     bool                      showRaw        = true;
     bool                      liveAnim       = true;
+    // User-configurable keybindings — defaults populated by Defaults();
+    // overlaid by Load() on startup; persisted on every rebind.
+    Keybindings               bindings       = Keybindings::Defaults();
 
     // Render-time stats (updated each frame from main loop)
     float                     renderMs       = 14.2f;
