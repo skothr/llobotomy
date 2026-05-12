@@ -48,6 +48,18 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(imgui PUBLIC ${X11_LIBRARIES} Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
+# Vendored ImGuiFileDialog v0.6.8 (libs/ImGuiFileDialog).  MIT licensed;
+# see libs/ImGuiFileDialog/LICENSE.  Single-translation-unit build; the
+# config header next to the source is the empty default (we do NOT enable
+# bookmarks / thumbnails — keep the dependency surface minimal).
+add_library(imgui_file_dialog STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/libs/ImGuiFileDialog/ImGuiFileDialog.cpp
+)
+target_include_directories(imgui_file_dialog SYSTEM PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/libs/ImGuiFileDialog
+)
+target_link_libraries(imgui_file_dialog PUBLIC imgui)
+
 # ---------------------------------------------------------------------------
 # llobotomy executable
 # ---------------------------------------------------------------------------
@@ -61,6 +73,7 @@ add_executable(llobotomy
   src/ui/chrome.cpp
   src/ui/dialogs.cpp
   src/ui/dockhost.cpp
+  src/ui/file_dialogs.cpp
   src/ui/settings.cpp
   src/ui/widgets.cpp
   src/workspaces/architecture.cpp
@@ -74,7 +87,7 @@ add_executable(llobotomy
   src/workspaces/logs.cpp
 )
 target_include_directories(llobotomy PRIVATE src libs)
-target_link_libraries(llobotomy PRIVATE imgui)
+target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog)
 target_compile_options(llobotomy PRIVATE
   -Wall -Wextra -Wpedantic
   -Wno-c99-designator

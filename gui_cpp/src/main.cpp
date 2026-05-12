@@ -13,6 +13,7 @@
 #include "ui/chrome.hpp"
 #include "ui/dialogs.hpp"
 #include "ui/dockhost.hpp"
+#include "ui/file_dialogs.hpp"
 #include "ui/settings.hpp"
 #include "workspaces/workspaces.hpp"
 
@@ -495,9 +496,14 @@ int main() {
                 LLOB_LOG_INFO("project", "closed %s", name.c_str());
             }
         }
-        // Phase 3 will dispatch menu.open_ckpt / save_probe / export_state.
-        (void)menu.open_ckpt;
-        (void)menu.save_probe; (void)menu.export_state;
+        // File dialogs (open ckpt / save probe / export state) — opens
+        // popup the first frame the trigger fires; renders + handles
+        // confirmation across as many frames as the user takes.
+        llob::DispatchFileDialogs(s, model, llob::FileDialogActions{
+            .open_ckpt    = menu.open_ckpt,
+            .save_probe   = menu.save_probe,
+            .export_state = menu.export_state,
+        });
 
         // Project tabs strip (just under the menubar).
         ImGuiViewport* vp = ImGui::GetMainViewport();
