@@ -443,11 +443,33 @@ void SubmitInferencePanels(AppState& s, Model& m) {
     if (s.showRaw) {
         if (ImGui::Begin("inf.raw", nullptr, ImGuiWindowFlags_NoTitleBar)) {
             DrawTitleBar("raw_tensor", "0x", "fp16", "raw");
-            // [DATA HOOK] Model::getActivation(layer, kind, n) — raw values
-            // for hex display.  Real backend reads `resid_post` for the
-            // active layer/token.
-            const auto buf = m.getActivation(s.activeLayer, 0, 256);
-            HexView(buf, 0, 4, 28, HexMode::Fp16);
+            // Activations are bounded by d_model — even for big models
+            // they fit comfortably in memory, so a single getActivation
+            // call still suffices.  Wrap in HexViewVirtual anyway so the
+            // ImGuiListClipper skips offscreen rows when d_model is large
+            // (e.g. 8192 → 2048 rows of 4 cols, mostly clipped).
+            constexpr int kCols = 4;
+            const int total = s.model.dModel;
+            if (total <= 0) {
+                ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+                ImGui::TextUnformatted("// no activation data");
+                ImGui::PopStyleColor();
+            } else {
+                HexViewVirtual(total / kCols, kCols, /*baseAddr=*/0, HexMode::Fp16,
+                    [&](int first, int n) {
+                        // [DATA HOOK] Model::getActivation(layer, kind, n)
+                        // currently fetches from offset 0.  Real engine
+                        // should support `(layer, kind, offset, n)` so the
+                        // page is true mid-tensor; until then we fetch the
+                        // full slice and slice it CPU-side.
+                        const auto full = m.getActivation(s.activeLayer, 0, total);
+                        const int  off  = first * kCols;
+                        const int  end  = std::min(off + n * kCols, int(full.size()));
+                        return std::vector<float>(
+                            full.begin() + std::min(off, int(full.size())),
+                            full.begin() + std::max(off, end));
+                    });
+            }
         }
         ImGui::End();
     }

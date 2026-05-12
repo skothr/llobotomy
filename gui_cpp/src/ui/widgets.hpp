@@ -1,7 +1,9 @@
 #pragma once
 #include <imgui.h>
 
+#include <functional>
 #include <span>
+#include <vector>
 #include <string_view>
 #include <vector>
 
@@ -93,10 +95,27 @@ void MiniGrid(std::span<const float> values, int cols, float cellSize,
 // Hex view — fp16 / hex / int8 / u16. Pass an offset into a virtual address
 // space for the address column. nameFn(offset) → optional row label string
 // (return nullptr for none).
+//
+// `rowOffset` is the absolute row index of the first row in `buffer` (the
+// caller's view into a larger virtual buffer); only affects the address
+// column.  Defaults to 0 for non-paged use.
 enum class HexMode { Fp16, Hex, U16 };
 void HexView(std::span<const float> buffer,
              std::size_t baseAddr, int bytesPerRow, int rows,
-             HexMode mode, const char* (*nameFn)(int) = nullptr);
+             HexMode mode, const char* (*nameFn)(int) = nullptr,
+             int rowOffset = 0);
+
+// Virtualized hex view for tensors that may be many GB.  Uses
+// ImGuiListClipper to determine which rows are visible, then asks
+// `fetchRows(first, n)` to materialise only those rows (vector of length
+// n*colsPerRow floats).  Caller passes the total row count + cols/row.
+//
+// fetchRows is invoked at most once per ListClipper step; on the empty-
+// data return (e.g. backend has no tensor at this name), the page is
+// rendered as muted "—" placeholders so the address column still shows.
+void HexViewVirtual(int totalRows, int colsPerRow, std::size_t baseAddr,
+                    HexMode mode,
+                    const std::function<std::vector<float>(int firstRow, int n)>& fetchRows);
 
 // Slim slider with embedded value label (matches HANDOFF.md ImSlider spec).
 // Returns true when value changed this frame.

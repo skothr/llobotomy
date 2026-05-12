@@ -330,7 +330,8 @@ void MiniGrid(std::span<const float> values, int cols, float cellSize, ImU32 (*c
 
 void HexView(std::span<const float> buffer,
              std::size_t baseAddr, int bytesPerRow, int rows,
-             HexMode mode, const char* (*nameFn)(int)) {
+             HexMode mode, const char* (*nameFn)(int),
+             int rowOffset) {
     const ImVec2 p_root = ImGui::GetCursorScreenPos();
     const float row_h = 14.0f;
     const float W = ImGui::GetContentRegionAvail().x;
@@ -342,9 +343,11 @@ void HexView(std::span<const float> buffer,
     for (int r = 0; r < rows; ++r) {
         const int    offset = r * bytesPerRow;
         const ImVec2 ry  = { p_root.x + 6, p_root.y + 4 + r * row_h };
-        // address
+        // address — rowOffset shifts so paged callers can show the
+        // absolute address rather than the slice-relative one.
         char addr[24];
-        std::snprintf(addr, sizeof addr, "0x%08zx", baseAddr + std::size_t(offset) * 4);
+        std::snprintf(addr, sizeof addr, "0x%08zx",
+                      baseAddr + std::size_t(rowOffset + r) * std::size_t(bytesPerRow) * 4);
         dl->AddText(ry, Sty().text_dim, addr);
         // values
         float cx = ry.x + 80;
@@ -366,13 +369,47 @@ void HexView(std::span<const float> buffer,
             dl->AddText({cx, ry.y}, col, vb);
             cx += 64;
         }
-        // optional row name
+        // optional row name — passed the ABSOLUTE offset so the caller can
+        // resolve a tensor-wide row label even when paged.
         if (nameFn) {
-            const char* name = nameFn(offset);
+            const char* name = nameFn(offset + rowOffset * bytesPerRow);
             if (name) dl->AddText({cx + 6, ry.y}, Sty().warn, name);
         }
     }
     ImGui::Dummy(ImVec2(W, rows * row_h + 8));
+}
+
+void HexViewVirtual(int totalRows, int colsPerRow, std::size_t baseAddr,
+                    HexMode mode,
+                    const std::function<std::vector<float>(int, int)>& fetchRows) {
+    if (totalRows <= 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+        ImGui::TextUnformatted("// empty tensor");
+        ImGui::PopStyleColor();
+        return;
+    }
+    constexpr float row_h = 14.0f;
+
+    // Use ImGuiListClipper to skip rendering offscreen rows.  Each Step()
+    // gives a [DisplayStart, DisplayEnd) range; we fetch only those rows
+    // from the engine and render them via the regular HexView with
+    // rowOffset=DisplayStart so the address column stays absolute.
+    ImGuiListClipper clipper;
+    clipper.Begin(totalRows, row_h);
+    while (clipper.Step()) {
+        const int first = clipper.DisplayStart;
+        const int last  = clipper.DisplayEnd;
+        const int n     = last - first;
+        if (n <= 0) continue;
+        // Backend pages by float offset, not byte offset.
+        std::vector<float> page = fetchRows(first, n);
+        // Render this page at the current cursor (clipper has positioned
+        // it for us).  HexView is single-pane; pass n rows + rowOffset
+        // for absolute addressing.
+        std::span<const float> view(page.data(), page.size());
+        HexView(view, baseAddr, colsPerRow, n, mode, nullptr, first);
+    }
+    clipper.End();
 }
 
 // ── ImSliderF ──────────────────────────────────────────────────────────────

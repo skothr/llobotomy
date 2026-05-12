@@ -732,18 +732,29 @@ void DrawRawHex(AppState& s, Model& m) {
     char flag[16]; std::snprintf(flag, sizeof flag, "W_Q[L%02d]", s.activeLayer);
     DrawTitleBar("param_hex", "0x", flag, "param-hex");
     if (!ImGui::BeginChild("##rawhex_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
-    // [DATA HOOK] Model::getWeightSlice(name, offset, n) — n raw fp16
-    // values from the named tensor starting at `offset`.  Engine reads
-    // straight from the checkpoint tensor (mmap'd ideally).
+    // [DATA HOOK] Model::getTensorMeta(name) — gives total element count
+    // via `shape` so we can render a virtualised view.
+    // [DATA HOOK] Model::getWeightSlice(name, offset, n) — paged on demand
+    // by HexViewVirtual via ImGuiListClipper.  Engine reads from the
+    // mmap'd checkpoint tensor at `offset` for `n` floats; only visible
+    // rows are fetched per frame.
     char tname[64]; std::snprintf(tname, sizeof tname,
                                    "blocks.%d.attn.W_Q.weight", s.activeLayer);
-    const auto buf = m.getWeightSlice(tname, 0, 200);
-    if (buf.empty()) {
+    const auto meta = m.getTensorMeta(tname);
+    int total_elem = 0;
+    for (int d : meta.shape) total_elem = (total_elem == 0) ? d : total_elem * d;
+    if (total_elem <= 0) {
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
         ImGui::TextUnformatted("// no tensor data available");
         ImGui::PopStyleColor();
     } else {
-        HexView(buf, 0, 3, 28, HexMode::Fp16);
+        constexpr int kCols = 3;
+        HexViewVirtual(total_elem / kCols, kCols, /*baseAddr=*/0, HexMode::Fp16,
+            [&, tname_owned = std::string(tname)](int first, int n) {
+                return m.getWeightSlice(tname_owned,
+                                        std::size_t(first) * kCols,
+                                        n * kCols);
+            });
     }
     ImGui::EndChild();
 }
