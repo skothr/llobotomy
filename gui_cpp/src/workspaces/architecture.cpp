@@ -226,6 +226,15 @@ void DrawArchMap(AppState& s, Model& m) {
         ImGui::EndChild(); return;
     }
 
+    if (!s.hasModel()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+        ImGui::Dummy(ImVec2(0, 30));
+        ImGui::TextUnformatted("    // no model loaded — open a checkpoint via File ▸ Open");
+        ImGui::PopStyleColor();
+        ImGui::EndChild();
+        return;
+    }
+
     const Cols cols = ComputeCols(s.model);
     const float Z = s.archZoom;
 
@@ -710,6 +719,10 @@ void DrawRawHex(AppState& s, Model& m) {
 // child windows with explicit widths plus a flexible center.  Center is
 // itself split into arch_map (top) + (dist | ops) (bottom).
 void DrawArchitectureWorkspace(AppState& s, Model& m) {
+    if (!s.hasModel()) {
+        EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        return;
+    }
     const float full_w = ImGui::GetContentRegionAvail().x;
     const float full_h = ImGui::GetContentRegionAvail().y;
     const bool  raw = s.showRaw;

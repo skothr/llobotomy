@@ -400,6 +400,10 @@ void DrawProbeControls(AppState& s, Model& m) {
 }  // namespace
 
 void DrawInferenceWorkspace(AppState& s, Model& m) {
+    if (!s.hasModel()) {
+        EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        return;
+    }
     const float W = ImGui::GetContentRegionAvail().x;
     const float H = ImGui::GetContentRegionAvail().y;
     const float gap = 1.0f;

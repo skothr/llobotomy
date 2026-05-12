@@ -19,6 +19,7 @@
 #include <GLFW/glfw3.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -30,7 +31,7 @@ void glfw_error(int err, const char* desc) {
     std::fprintf(stderr, "[glfw] error %d: %s\n", err, desc);
 }
 
-void DrawMenubar(const llob::AppState& s) {
+void DrawMenubar(const llob::AppState& s, llob::Model& m) {
     using namespace llob;
     if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
@@ -52,8 +53,22 @@ void DrawMenubar(const llob::AppState& s) {
         if (ImGui::BeginMenu("View"))   { ImGui::MenuItem("Settings…"); ImGui::Separator(); ImGui::MenuItem("Show raw pane"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Help"))   { ImGui::MenuItem("About"); ImGui::EndMenu(); }
 
-        // Right-aligned status block.
-        const char* right = "cuda:0 A100 · fp16 · 14.2ms · 38.4/80G";
+        // [DATA HOOK] Model::getEngineMetrics() — device tag, dtype,
+        // current frame time, vram usage.  Renders as "—" when unwired.
+        const auto em = m.getEngineMetrics();
+        char right[160];
+        char dev_buf[32], dtype_buf[16], frame_buf[24], mem_buf[32];
+        std::snprintf(dev_buf,   sizeof dev_buf,   "%s", em.device.empty() ? "—" : em.device.c_str());
+        std::snprintf(dtype_buf, sizeof dtype_buf, "%s", em.dtype.empty()  ? "—" : em.dtype.c_str());
+        if (std::isnan(em.fwd_time_ms)) std::snprintf(frame_buf, sizeof frame_buf, "frame —");
+        else                              std::snprintf(frame_buf, sizeof frame_buf, "frame %.1fms", double(em.fwd_time_ms));
+        if (std::isnan(em.cuda_mem_used_GB) || std::isnan(em.cuda_mem_total_GB))
+            std::snprintf(mem_buf, sizeof mem_buf, "mem —");
+        else
+            std::snprintf(mem_buf, sizeof mem_buf, "mem %.1f/%.0fG",
+                          double(em.cuda_mem_used_GB), double(em.cuda_mem_total_GB));
+        std::snprintf(right, sizeof right, "%s · %s · %s · %s",
+                      dev_buf, dtype_buf, frame_buf, mem_buf);
         const float w = ImGui::CalcTextSize(right).x;
         ImGui::SameLine(ImGui::GetWindowWidth() - w - 16.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
@@ -81,12 +96,17 @@ void DrawStatusBar(const llob::AppState& s) {
         ImGui::TextUnformatted(t);
         ImGui::SameLine(0, 16.0f);
     };
-    seg_text(s.running ? "> RUNNING" : "* CONNECTED");
+    seg_text(s.running ? "> RUNNING" : s.hasModel() ? "* CONNECTED" : "* NO MODEL");
     char buf[128];
-    std::snprintf(buf, sizeof buf, "project: %s", s.activeProject.c_str()); seg_text(buf);
+    std::snprintf(buf, sizeof buf, "project: %s",
+                  s.activeProject.empty() ? "—" : s.activeProject.c_str()); seg_text(buf);
     std::snprintf(buf, sizeof buf, "workspace: %s", WsDef(s.activeWs).short_label); seg_text(buf);
-    std::snprintf(buf, sizeof buf, "L%02d/%d", s.activeLayer, s.model.nLayers); seg_text(buf);
-    std::snprintf(buf, sizeof buf, "tok %02d", s.activeToken); seg_text(buf);
+    if (s.hasModel()) std::snprintf(buf, sizeof buf, "L%02d/%d", s.activeLayer, s.model.nLayers);
+    else              std::snprintf(buf, sizeof buf, "L—/—");
+    seg_text(buf);
+    if (!s.sampleTokens.empty()) std::snprintf(buf, sizeof buf, "tok %02d", s.activeToken);
+    else                          std::snprintf(buf, sizeof buf, "tok —");
+    seg_text(buf);
     ImGui::PopStyleColor();
     {
         char abuf[64];
@@ -151,8 +171,11 @@ void DrawWorkspaceTabRow(llob::AppState& s) {
     for (int i = 0; i < kNumWorkspaces; ++i) labels[i] = WsDef(static_cast<Workspace>(i)).label;
 
     char right[160];
-    std::snprintf(right, sizeof right, "model: %s  |  %dL x %dh x %dd",
-                  s.model.name.c_str(), s.model.nLayers, s.model.nHeads, s.model.dModel);
+    if (s.hasModel())
+        std::snprintf(right, sizeof right, "model: %s  |  %dL x %dh x %dd",
+                      s.model.name.c_str(), s.model.nLayers, s.model.nHeads, s.model.dModel);
+    else
+        std::snprintf(right, sizeof right, "model: —");
 
     int active = static_cast<int>(s.activeWs);
     DrawWorkspaceTabs(active, labels, kNumWorkspaces, right);
@@ -266,11 +289,16 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init("#version 130");
 
-    llob::AppState s; s.seedDemo();
+    llob::AppState s;
+    s.seedSession();
+#if LLOB_USE_MOCK_DATA
+    s.seedMockData();
+#endif
     llob::ApplyStyle(llob::BuildStyle(s.theme, s.density, s.accentOverride));
 
     llob::MockModel mm;
     llob::Model&    model = mm;
+    s.loadFromModel(model);  // populate AppState.model from a real backend
 
     auto last = std::chrono::steady_clock::now();
     while (!glfwWindowShouldClose(win)) {
@@ -282,7 +310,7 @@ int main() {
 
         s.tickLiveFeed();
         HandleShortcuts(s);
-        DrawMenubar(s);
+        DrawMenubar(s, model);
 
         // Project tabs strip (just under the menubar).
         ImGuiViewport* vp = ImGui::GetMainViewport();

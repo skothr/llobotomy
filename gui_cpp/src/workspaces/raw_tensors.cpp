@@ -224,6 +224,13 @@ void DrawDiffView(const std::string& name, Model& m) {
 }  // namespace
 
 void DrawRawTensorsWorkspace(AppState& s, Model& m) {
+    // This workspace shows checkpoint tensors directly; without a model
+    // loaded, the state_dict is empty and there's nothing to inspect.
+    const auto entries = m.getStateDict();
+    if (entries.empty() && !s.hasModel()) {
+        EmptyStatePlaceholder("// no model loaded — open a checkpoint to browse tensors");
+        return;
+    }
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     const float gap = 1.0f;
     const float lw = 320.0f, rw = 280.0f;

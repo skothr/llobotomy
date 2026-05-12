@@ -286,4 +286,13 @@ bool WasRightClicked() {
     return ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
 }
 
+void EmptyStatePlaceholder(const char* message) {
+    ImGui::Dummy(ImVec2(0, 24));
+    ImGui::Indent(20);
+    ImGui::PushStyleColor(ImGuiCol_Text, Sty().text_muted);
+    ImGui::TextUnformatted(message);
+    ImGui::PopStyleColor();
+    ImGui::Unindent(20);
+}
+
 }  // namespace llob

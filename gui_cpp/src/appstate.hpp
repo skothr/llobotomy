@@ -12,6 +12,8 @@
 
 namespace llob {
 
+struct Model;     // fwd; src/model/model.hpp
+
 struct ModelInfo {
     std::string name;
     int nLayers;
@@ -44,17 +46,18 @@ struct AppState {
     // Workspace & projects
     Workspace                 activeWs       = Workspace::Arch;
     std::vector<ProjectTab>   projects;
-    std::string               activeProject  = "p1";
+    std::string               activeProject;
 
     // Model (mockable — see model.hpp)
     ModelInfo                 model{};
     std::vector<std::string>  sampleTokens;     // used by inference/attn
 
-    // Global selection
-    int                       activeLayer    = 8;
-    int                       activeToken    = 11;
-    int                       activeHead     = 3;
-    std::string               activeTensor   = "blocks.8.attn.W_Q.weight";
+    // Global selection (zero / empty when no model is loaded — the
+    // demo seeder overrides these with sensible defaults for its model).
+    int                       activeLayer    = 0;
+    int                       activeToken    = 0;
+    int                       activeHead     = 0;
+    std::string               activeTensor   = "";
 
     // Ablation / probe sets — keys "L.h" or "L.<comp>"
     std::unordered_set<std::string> ablatedHeads;
@@ -102,7 +105,26 @@ struct AppState {
     void  setActiveTensor(std::string name);
 
     void  pushLog(std::string kind, std::string msg);
-    void  seedDemo();              // initial projects, ablations, sample logs
+
+    // Per-session UI defaults (theme already at sane defaults; this only
+    // touches non-engine state so it's safe to always call on startup).
+    void  seedSession();
+
+    // Demo-only seeding — populates a 6-layer toy model, sample tokens,
+    // pre-set ablations / probes, project tabs, and a few canned log
+    // entries.  Gated by LLOB_USE_MOCK_DATA at the call site so a real
+    // build doesn't get pre-populated with fake state.
+    void  seedMockData();
+
+    // True when a Model has been wired up (nLayers > 0 etc.) — UI uses
+    // this to decide whether to render workspace contents or a "no model
+    // loaded" placeholder.
+    bool  hasModel() const { return model.nLayers > 0; }
+
+    // Pull non-mock state from a real Model (model topology + current
+    // tokenization, when the engine exposes them).
+    void  loadFromModel(Model& m);
+
     void  tickLiveFeed();          // synthetic logs + run-loop stepping
 };
 

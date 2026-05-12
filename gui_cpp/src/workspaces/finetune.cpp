@@ -207,6 +207,10 @@ void DrawDiffRun(const ModelInfo& mi, const std::unordered_set<int>& frozen, Mod
 }  // namespace
 
 void DrawFineTuneWorkspace(AppState& s, Model& m) {
+    if (!s.hasModel()) {
+        EmptyStatePlaceholder("// no model loaded — open a checkpoint to configure finetuning");
+        return;
+    }
     static std::unordered_set<int> frozen{0, 1, 2, 3};
 
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;

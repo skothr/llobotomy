@@ -195,6 +195,10 @@ void DrawLayerLoss(const ModelInfo& mi, Model& m) {
 }  // namespace
 
 void DrawTrainingWorkspace(AppState& s, Model& m) {
+    if (!s.hasModel()) {
+        EmptyStatePlaceholder("// no model loaded — open a checkpoint to begin training");
+        return;
+    }
     const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
     const float gap = 1.0f;
     const float right_w = 320.0f, left_w = std::max(200.0f, W - right_w - gap);

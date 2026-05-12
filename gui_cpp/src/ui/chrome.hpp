@@ -79,4 +79,9 @@ bool TreeRow(const char* id_str, const char* label, TreeRowFlags f);
 // right-clicked.
 bool WasRightClicked();
 
+// Render an empty-state placeholder inside the current child window.
+// Used by workspaces that depend on a loaded model — call early in the
+// draw function and bail if it returns false.
+void EmptyStatePlaceholder(const char* message);
+
 }  // namespace llob

@@ -99,15 +99,32 @@ void AppState::pushLog(std::string kind, std::string msg) {
     logs.push_back(LogEntry{ NowMs(), std::move(kind), std::move(msg) });
 }
 
-// ── Demo bootstrap (matches app.jsx defaults) ─────────────────────────────
+// ── Session bootstrap ─────────────────────────────────────────────────────
 
-void AppState::seedDemo() {
+void AppState::seedSession() {
+    // Defaults that aren't engine-data: theme, density, layout flags.  The
+    // struct itself already has these in member initialisers, so this is
+    // currently a no-op — the function exists as the seam where session
+    // prefs would be loaded from disk in a future polish pass.
+    lastSyntheticLog = std::chrono::steady_clock::now();
+    lastStepTime     = std::chrono::steady_clock::now();
+}
+
+void AppState::loadFromModel(Model& /*m*/) {
+    // [DATA HOOK] Once Model exposes getModelInfo() / getCurrentTokens(),
+    // populate `model` and `sampleTokens` from the engine here.  The
+    // current Model interface (model.hpp) doesn't have those yet — they
+    // belong on the next round of hooks.
+}
+
+// ── Demo seed (mock-only) ────────────────────────────────────────────────
+
+void AppState::seedMockData() {
     model = ModelInfo{
         .name = "tiny-decoder",
         .nLayers = 6, .nHeads = 6, .dModel = 384,
         .dHead = 64, .dMlp = 1536, .vocab = 32000,
     };
-    // Default layer for the 6-layer tiny model.
     activeLayer = 4;
     activeHead  = 3;
     expandedLayers = { activeLayer };
@@ -131,7 +148,6 @@ void AppState::seedDemo() {
     };
     activeProject = "p1";
 
-    // Pre-seeded ablations / probes (match the screenshot state).
     ablatedHeads.insert("4.3");
     ablatedHeads.insert("4.5");
     ablatedHeads.insert("2.2");
@@ -139,7 +155,6 @@ void AppState::seedDemo() {
     probedHeads.insert("5.1");
     probedComponents.insert("4.W_Q");
 
-    // Seed a starter log feed.
     const std::int64_t now = NowMs();
     logs.push_back({now - 9000, "init",   "llobotomy 0.4.18-rc2 starting"});
     logs.push_back({now - 8800, "init",   "cuda:0 detected · A100 80GB"});
@@ -154,8 +169,6 @@ void AppState::seedDemo() {
     logs.push_back({now - 2200, "probe",  "attached probe @ block_4.head_3"});
     logs.push_back({now - 1800, "probe",  "attached probe @ block_5.head_1"});
     logs.push_back({now -  800, "fwd",    "forward pass · L4 · 11.7ms"});
-    lastSyntheticLog = std::chrono::steady_clock::now();
-    lastStepTime     = std::chrono::steady_clock::now();
 }
 
 // ── Live tick: synthetic logs + inference step ────────────────────────────
@@ -163,6 +176,10 @@ void AppState::seedDemo() {
 void AppState::tickLiveFeed() {
     using clock = std::chrono::steady_clock;
     const auto now = clock::now();
+
+    // No-op until a model is wired — synthetic logs + run-loop stepping
+    // both depend on having a real (or mock) model + tokens.
+    if (!hasModel() || sampleTokens.empty()) return;
 
     // Run-loop step (~380ms per token).
     if (running) {
