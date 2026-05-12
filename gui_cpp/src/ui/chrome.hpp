@@ -18,23 +18,29 @@ namespace llob {
 void DrawTitleBar(const char* title, const char* icon, const char* flag,
                   const char* dockId, std::function<void()> controls = {});
 
-// Section: collapsible grouped block inside a window's body. Returns true
-// when expanded — caller submits children only on true.
+// Section: collapsible grouped block inside a window's body.  The returned
+// SectionScope is an RAII guard — its destructor pops the ID + indent that
+// BeginSection pushed, so the body is safe to skip via `if (auto s = ...)`.
 //
 //   if (auto s = BeginSection("Selected component", true /*accent*/, "L02")) {
-//       // ... rows ...
-//   }
-//   EndSection(s);
+//       // rows here, only emitted when the section is expanded
+//   }   // ~SectionScope runs here whether or not the body ran
 //
-// The Begin/End pair encodes the expansion state in the returned struct so
-// callers can use scoped guards (defined in chrome_scoped.hpp later) without
-// double-bookkeeping.
+// Trailing EndSection(scope) is a no-op compatibility shim.
 struct SectionScope {
-    bool open;
+    bool open  = false;
+    bool owned = false;
+    SectionScope() = default;
+    SectionScope(bool open_, bool owned_) : open(open_), owned(owned_) {}
+    SectionScope(const SectionScope&) = delete;
+    SectionScope& operator=(const SectionScope&) = delete;
+    SectionScope(SectionScope&& other) noexcept : open(other.open), owned(other.owned) { other.owned = false; }
+    SectionScope& operator=(SectionScope&&) = delete;
+    ~SectionScope();
     explicit operator bool() const { return open; }
 };
 SectionScope BeginSection(const char* title, bool accent = false, const char* badge = nullptr);
-void         EndSection(SectionScope s);
+void         EndSection(SectionScope& s);   // back-compat; SectionScope dtor handles cleanup
 
 // ── KV grid ────────────────────────────────────────────────────────────────
 struct KVRow { const char* k; std::string_view v; const char* tone = ""; };

@@ -74,6 +74,13 @@ void DrawTitleBar(const char* title, const char* icon, const char* flag,
 
 // ── Section ────────────────────────────────────────────────────────────────
 
+SectionScope::~SectionScope() {
+    if (!owned) return;
+    if (open) ImGui::Unindent(2.0f);
+    ImGui::Dummy(ImVec2(0, 4.0f));
+    ImGui::PopID();
+}
+
 SectionScope BeginSection(const char* title, bool accent, const char* badge) {
     ImGui::PushID(title);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -110,13 +117,14 @@ SectionScope BeginSection(const char* title, bool accent, const char* badge) {
         dl->AddText({b0.x + 5.0f, b0.y + (b1.y - b0.y - sz.y) * 0.5f}, Sty().text_muted, badge);
     }
     if (open) ImGui::Indent(2.0f);
-    return SectionScope{ open };
+    return SectionScope{ open, /*owned=*/true };
 }
 
-void EndSection(SectionScope s) {
-    if (s.open) ImGui::Unindent(2.0f);
-    ImGui::Dummy(ImVec2(0, 4.0f));
-    ImGui::PopID();
+// Compatibility shim for `if (auto s = ...) { ...; EndSection(s); }` callers:
+// transfer ownership to a temporary so the cleanup runs here exactly once.
+void EndSection(SectionScope& s) {
+    SectionScope take = std::move(s);
+    (void)take;
 }
 
 // ── KV grid ────────────────────────────────────────────────────────────────
