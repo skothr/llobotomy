@@ -9,6 +9,7 @@
 
 #include "appstate.hpp"
 #include "model/model.hpp"
+#include "logger.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/fmt.hpp"
@@ -114,12 +115,12 @@ void DrawForwardPass(AppState& s, Model& m) {
     DrawTitleBar("forward_pass", "▶", flag, "fwd", [&] {
         if (ImGui::SmallButton(s.running ? "|| pause" : "> run")) {
             s.running = !s.running;
-            s.pushLog("run", s.running ? "starting forward sweep" : "paused forward sweep");
+            LLOB_LOG_INFO("run", "%s", s.running ? "starting forward sweep" : "paused forward sweep");
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton("step")) { s.setActiveToken(s.activeToken + 1); s.pushLog("run", "step → next token"); }
+        if (ImGui::SmallButton("step")) { s.setActiveToken(s.activeToken + 1); LLOB_LOG_INFO("run", "step → next token"); }
         ImGui::SameLine();
-        if (ImGui::SmallButton("(reset)")) { s.activeToken = 0; s.stepIdx = 0; s.running = false; s.pushLog("run", "reset to pos 0"); }
+        if (ImGui::SmallButton("(reset)")) { s.activeToken = 0; s.stepIdx = 0; s.running = false; LLOB_LOG_INFO("run", "reset to pos 0"); }
     });
     if (!ImGui::BeginChild("##fwd_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
 

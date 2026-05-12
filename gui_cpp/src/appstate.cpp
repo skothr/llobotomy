@@ -1,9 +1,10 @@
 #include "appstate.hpp"
 
+#include "logger.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <random>
 #include <string>
 #include <utility>
 
@@ -39,35 +40,59 @@ bool toggle(Set& set, Key&& key) {
 
 const WorkspaceDef& WsDef(Workspace w) { return kWorkspaces[static_cast<int>(w)]; }
 
+const char* SeverityName(Severity s) {
+    switch (s) {
+        case Severity::Trace: return "trace";
+        case Severity::Debug: return "debug";
+        case Severity::Info:  return "info";
+        case Severity::Warn:  return "warn";
+        case Severity::Error: return "error";
+        case Severity::Fatal: return "fatal";
+    }
+    return "?";
+}
+const char* SeverityShort(Severity s) {
+    switch (s) {
+        case Severity::Trace: return "TRACE";
+        case Severity::Debug: return "DEBUG";
+        case Severity::Info:  return "INFO ";
+        case Severity::Warn:  return "WARN ";
+        case Severity::Error: return "ERROR";
+        case Severity::Fatal: return "FATAL";
+    }
+    return "?    ";
+}
+
 // ── Mutators ───────────────────────────────────────────────────────────────
 
 void AppState::toggleProbe(int L, int h) {
     char buf[24];
     std::snprintf(buf, sizeof buf, "%d.%d", L, h);
     const bool on = toggle(probedHeads, std::string(buf));
-    char msg[64];
-    std::snprintf(msg, sizeof msg, "%s probe @ block_%d.head_%d",
+    LLOB_LOG_INFO("probe", "%s probe @ block_%d.head_%d",
                   on ? "attached" : "detached", L, h);
-    pushLog("probe", msg);
 }
 
 void AppState::toggleAblate(std::string_view headKey) {
     const bool on = toggle(ablatedHeads, std::string(headKey));
-    pushLog("ablate", std::string(on ? "ablated head " : "restored head ") + std::string(headKey));
+    LLOB_LOG_INFO("ablate", "%s head %.*s",
+                  on ? "ablated" : "restored",
+                  static_cast<int>(headKey.size()), headKey.data());
 }
 
 void AppState::toggleProbeComp(int L, std::string_view comp) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%d.%.40s", L, std::string(comp).c_str());
     const bool on = toggle(probedComponents, std::string(buf));
-    pushLog("probe", std::string(on ? "attached probe @ " : "detached probe @ ") + buf);
+    LLOB_LOG_INFO("probe", "%s probe @ %s",
+                  on ? "attached" : "detached", buf);
 }
 
 void AppState::toggleAblateComp(int L, std::string_view comp) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%d.%.40s", L, std::string(comp).c_str());
     const bool on = toggle(ablatedComponents, std::string(buf));
-    pushLog("ablate", std::string(on ? "ablated " : "restored ") + buf);
+    LLOB_LOG_INFO("ablate", "%s %s", on ? "ablated" : "restored", buf);
 }
 
 void AppState::toggleLayerExpand(int L) {
@@ -76,10 +101,8 @@ void AppState::toggleLayerExpand(int L) {
 
 void AppState::toggleLayerSkip(int L) {
     const bool on = toggle(skippedLayers, L);
-    char msg[64];
-    std::snprintf(msg, sizeof msg, "%s block_%d (whole-layer bypass)",
+    LLOB_LOG_INFO("ablate", "%s block_%d (whole-layer bypass)",
                   on ? "skipped" : "restored", L);
-    pushLog("ablate", msg);
 }
 
 void AppState::setActiveLayer(int L) {
@@ -94,9 +117,21 @@ void AppState::setActiveHead(int H) {
 }
 void AppState::setActiveTensor(std::string name) { activeTensor = std::move(name); }
 
-void AppState::pushLog(std::string kind, std::string msg) {
+void AppState::pushLog(Severity sev, std::string kind, std::string msg) {
+    std::lock_guard<std::mutex> lk(logs_mu);
     while (logs.size() >= 500) logs.pop_front();
-    logs.push_back(LogEntry{ NowMs(), std::move(kind), std::move(msg) });
+    logs.push_back(LogEntry{ NowMs(), sev, std::move(kind), std::move(msg) });
+}
+
+void AppState::pushLog(std::string kind, std::string msg) {
+    pushLog(Severity::Info, std::move(kind), std::move(msg));
+}
+
+std::vector<LogEntry> AppState::snapshotLogs(std::size_t n_tail) const {
+    std::lock_guard<std::mutex> lk(logs_mu);
+    if (n_tail == 0 || logs.empty()) return {};
+    const std::size_t n = std::min(n_tail, logs.size());
+    return std::vector<LogEntry>(logs.end() - static_cast<std::ptrdiff_t>(n), logs.end());
 }
 
 // ── Session bootstrap ─────────────────────────────────────────────────────
@@ -106,7 +141,6 @@ void AppState::seedSession() {
     // struct itself already has these in member initialisers, so this is
     // currently a no-op — the function exists as the seam where session
     // prefs would be loaded from disk in a future polish pass.
-    lastSyntheticLog = std::chrono::steady_clock::now();
     lastStepTime     = std::chrono::steady_clock::now();
 }
 
@@ -155,20 +189,10 @@ void AppState::seedMockData() {
     probedHeads.insert("5.1");
     probedComponents.insert("4.W_Q");
 
-    const std::int64_t now = NowMs();
-    logs.push_back({now - 9000, "init",   "llobotomy 0.4.18-rc2 starting"});
-    logs.push_back({now - 8800, "init",   "cuda:0 detected · A100 80GB"});
-    logs.push_back({now - 8500, "load",   "loaded checkpoint tiny-decoder (548MB)"});
-    logs.push_back({now - 8000, "hook",   "registered 144 forward hooks"});
-    logs.push_back({now - 7400, "probe",  "loaded probe set: refusal_v2 (14 active)"});
-    logs.push_back({now - 6800, "sae",    "mounted SAE L04-mlp (16384 features)"});
-    logs.push_back({now - 6000, "fwd",    "forward pass · L4 · 12.3ms"});
-    logs.push_back({now - 4200, "ablate", "ablated head 4.3 · zero"});
-    logs.push_back({now - 3800, "ablate", "ablated head 4.5 · zero"});
-    logs.push_back({now - 3400, "ablate", "ablated head 2.2 · zero"});
-    logs.push_back({now - 2200, "probe",  "attached probe @ block_4.head_3"});
-    logs.push_back({now - 1800, "probe",  "attached probe @ block_5.head_1"});
-    logs.push_back({now -  800, "fwd",    "forward pass · L4 · 11.7ms"});
+    // Mock-mode demo logs are emitted via the normal logger so they hit
+    // both the in-memory ring AND the on-disk log — same pipeline real
+    // events go through.  Tagged "demo" so they're easy to filter out.
+    LLOB_LOG_INFO("demo", "demo mode: pre-loaded toy model + ablations");
 }
 
 // ── Live tick: synthetic logs + inference step ────────────────────────────
@@ -177,8 +201,7 @@ void AppState::tickLiveFeed() {
     using clock = std::chrono::steady_clock;
     const auto now = clock::now();
 
-    // No-op until a model is wired — synthetic logs + run-loop stepping
-    // both depend on having a real (or mock) model + tokens.
+    // No model loaded → nothing to step.
     if (!hasModel() || sampleTokens.empty()) return;
 
     // Run-loop step (~380ms per token).
@@ -191,28 +214,6 @@ void AppState::tickLiveFeed() {
             stepIdx     = next;
             activeToken = next;
             lastStepTime = now;
-        }
-    }
-
-    // Synthetic logs (~1200ms cadence) when liveAnim + liveLogs.
-    if (liveAnim && liveLogs) {
-        const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSyntheticLog).count();
-        if (dt >= 1200) {
-            static thread_local std::mt19937 rng{0xC0DEBA5Eu};
-            std::uniform_int_distribution<int> samp(0, 3);
-            std::uniform_int_distribution<int> Ld(0, std::max(0, model.nLayers - 1));
-            std::uniform_real_distribution<float> ms(8.0f, 12.0f);
-            char buf[96];
-            const int kind = samp(rng);
-            const int L    = Ld(rng);
-            switch (kind) {
-                case 0: std::snprintf(buf, sizeof buf, "forward pass · L%d · %.2fms", L, ms(rng)); pushLog("fwd",   buf); break;
-                case 1: std::snprintf(buf, sizeof buf, "hook fired · resid_post @ L%d", L);        pushLog("hook",  buf); break;
-                case 2: std::snprintf(buf, sizeof buf, "KV cache · %d tok · %.2fMB", 128 + L * 16, 0.3f + ms(rng) * 0.04f);
-                                                                                                     pushLog("cache", buf); break;
-                default: std::snprintf(buf, sizeof buf, "vram delta · %+dMB", (L * 7) - 30);        pushLog("mem",   buf); break;
-            }
-            lastSyntheticLog = now;
         }
     }
 }

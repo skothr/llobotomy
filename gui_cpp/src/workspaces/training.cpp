@@ -9,6 +9,7 @@
 
 #include "appstate.hpp"
 #include "model/model.hpp"
+#include "logger.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/colormap.hpp"
@@ -63,33 +64,33 @@ void DrawRunSummary(Model& m) {
     ImGui::EndChild();
 }
 
-void DrawControl(AppState& s, Model& m) {
+void DrawControl(AppState&, Model& m) {
     DrawTitleBar("control", "⏵", nullptr, "ctrl");
     if (!ImGui::BeginChild("##ctrl_body", ImVec2(0, 0))) { ImGui::EndChild(); return; }
     const auto st = m.getTrainingState();
     if (ImGui::Button(st.running ? "|| pause" : "> resume")) {
         // [DATA HOOK] Model::pauseTraining() / resumeTraining() — gate the
         // training loop's tick.  Engine emits its own log line.
-        if (st.running) { m.pauseTraining();  s.pushLog("train", "paused"); }
-        else            { m.resumeTraining(); s.pushLog("train", "resumed"); }
+        if (st.running) { m.pauseTraining();  LLOB_LOG_INFO("train", "paused");  }
+        else            { m.resumeTraining(); LLOB_LOG_INFO("train", "resumed"); }
     }
     ImGui::SameLine();
     if (ImGui::Button("⏵ step")) {
         // [DATA HOOK] Model::stepTraining() — advance one batch and stop.
         m.stepTraining();
-        s.pushLog("train", "stepped one batch");
+        LLOB_LOG_INFO("train", "stepped one batch");
     }
     ImGui::SameLine();
     if (ImGui::Button("(reset)")) {
         // [DATA HOOK] Model::resetTraining() — re-init from step 0.
         m.resetTraining();
-        s.pushLog("train", "reset to step 0");
+        LLOB_LOG_INFO("train", "reset to step 0");
     }
     ImGui::SameLine();
     if (ImGui::Button("■ stop")) {
         // [DATA HOOK] Model::stopTraining() — request a clean shutdown.
         m.stopTraining();
-        s.pushLog("train", "STOP requested");
+        LLOB_LOG_INFO("train", "STOP requested");
     }
     // [DATA HOOK] Schedule + sync state belong on a future
     // TrainingScheduleConfig hook.  Placeholders here.
@@ -208,7 +209,7 @@ void DrawTrainingWorkspace(AppState& s, Model& m) {
     ImGui::BeginChild("##tr_top_left",  { left_w, top_h }, ImGuiChildFlags_Borders);
     DrawRunSummary(m); ImGui::EndChild(); ImGui::SameLine(0, gap);
     ImGui::BeginChild("##tr_top_right", { right_w, top_h }, ImGuiChildFlags_Borders);
-    DrawControl(s, m); ImGui::EndChild();
+    DrawControl(s, m); ImGui::EndChild(); (void)s;
 
     ImGui::BeginChild("##tr_mid_left",  { left_w, mid_h }, ImGuiChildFlags_Borders);
     DrawLossPlot(m); ImGui::EndChild(); ImGui::SameLine(0, gap);

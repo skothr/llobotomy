@@ -9,6 +9,7 @@
 
 #include "appstate.hpp"
 #include "model/model.hpp"
+#include "logger.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/colormap.hpp"
@@ -211,14 +212,14 @@ void DrawProbeOps(AppState& s, Model& m) {
             // — kicks off a real probe-training job in the backend.
             m.startProbeTraining(probeName, kindIdx == 0 ? "linear" : "logistic",
                                   "L08.resid_post", "harmful_v2");
-            s.pushLog("probe", std::string("training probe ") + probeName);
+            LLOB_LOG_INFO("probe", "training probe %s", probeName);
         }
         ImGui::SameLine();
         if (ImGui::Button("save")) {
             // [DATA HOOK] Model::saveProbe(name) — persist the trained
             // probe to disk; real backend writes to ./out/<name>.pt.
             m.saveProbe(probeName);
-            s.pushLog("probe", std::string("saved probe ") + probeName);
+            LLOB_LOG_INFO("probe", "saved probe %s", probeName);
         }
         if (pt.training) {
             ImGui::SameLine();
@@ -352,10 +353,10 @@ void DrawExport(AppState& s, Model& m) {
         // [DATA HOOK] Model::exportSnapshot(path) — serialise the full
         // session (ablations, probes, features, steering) to a JSON sidecar.
         m.exportSnapshot("./out/state.json");
-        s.pushLog("export", "state snapshot exported → ./out/state.json");
+        LLOB_LOG_INFO("export", "state snapshot exported → ./out/state.json");
     }
     ImGui::SameLine();
-    if (ImGui::Button("save preset"))   s.pushLog("export", "preset saved");
+    if (ImGui::Button("save preset"))   LLOB_LOG_INFO("export", "preset saved");
 
     if (auto sec = BeginSection("Recent exports")) {
         // [DATA HOOK] Model::getRecentExports() — list of recent export

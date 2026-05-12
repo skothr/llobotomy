@@ -55,6 +55,7 @@ add_executable(llobotomy
   src/main.cpp
   src/style.cpp
   src/appstate.cpp
+  src/logger.cpp
   src/model/mock_model.cpp
   src/ui/colormap.cpp
   src/ui/chrome.cpp

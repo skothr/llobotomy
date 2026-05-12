@@ -7,6 +7,7 @@
 // each workspace.  Per-workspace layout + widgets live under workspaces/.
 
 #include "appstate.hpp"
+#include "logger.hpp"
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
@@ -28,7 +29,7 @@
 namespace {
 
 void glfw_error(int err, const char* desc) {
-    std::fprintf(stderr, "[glfw] error %d: %s\n", err, desc);
+    LLOB_LOG_WARN("glfw", "error %d: %s", err, desc);
 }
 
 void DrawMenubar(const llob::AppState& s, llob::Model& m) {
@@ -181,7 +182,7 @@ void DrawWorkspaceTabRow(llob::AppState& s) {
     DrawWorkspaceTabs(active, labels, kNumWorkspaces, right);
     if (active != static_cast<int>(s.activeWs)) {
         s.activeWs = static_cast<Workspace>(active);
-        s.pushLog("init", std::string("switched workspace -> ") + WsDef(s.activeWs).short_label);
+        LLOB_LOG_DEBUG("ws", "switched workspace -> %s", WsDef(s.activeWs).short_label);
     }
 }
 
@@ -282,8 +283,7 @@ int main() {
             }
         }
     } else {
-        std::fprintf(stderr, "[font] Ubuntu Mono not found at %s — using ImGui default\n",
-                     kPrimary);
+        LLOB_LOG_WARN("font", "Ubuntu Mono not found at %s — using ImGui default", kPrimary);
     }
 
     ImGui_ImplGlfw_InitForOpenGL(win, true);
@@ -291,6 +291,11 @@ int main() {
 
     llob::AppState s;
     s.seedSession();
+    // Logger has to come up early — every subsequent push goes to both
+    // the in-memory ring AND the on-disk log file at the path below.
+    llob::LoggerInit(&s, "./llobotomy.log");
+    LLOB_LOG_INFO("init", "llobotomy starting · log file: %s",
+                  llob::LoggerPath().c_str());
 #if LLOB_USE_MOCK_DATA
     s.seedMockData();
 #endif
@@ -309,6 +314,12 @@ int main() {
         ImGui::NewFrame();
 
         s.tickLiveFeed();
+        // [DATA HOOK] Model::drainEngineLogs — pull any log lines the
+        // engine has produced since the last frame and fan them through
+        // the standard Logger so they hit both sinks.
+        for (const auto& e : model.drainEngineLogs()) {
+            llob::LoggerPush(e.sev, e.kind, e.msg);
+        }
         HandleShortcuts(s);
         DrawMenubar(s, model);
 
@@ -365,6 +376,8 @@ int main() {
         glfwSwapBuffers(win);
     }
 
+    LLOB_LOG_INFO("init", "shutting down");
+    llob::LoggerShutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

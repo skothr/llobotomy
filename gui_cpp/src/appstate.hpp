@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <deque>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -28,9 +29,16 @@ enum class Workspace : int {
     Arch = 0, Inf, Attn, Probes, Train, Ft, Data, Raw, Logs, Count
 };
 
+enum class Severity : int {
+    Trace = 0, Debug, Info, Warn, Error, Fatal,
+};
+const char* SeverityName(Severity s);   // "trace" / "debug" / ...
+const char* SeverityShort(Severity s);  // "TRACE" / "DEBUG" / ... 5-char padded
+
 struct LogEntry {
     std::int64_t  ts_ms;     // unix ms
-    std::string   kind;      // fwd/hook/cache/mem/probe/ablate/...
+    Severity      sev;       // trace/debug/info/warn/error/fatal
+    std::string   kind;      // source tag: fwd/probe/ablate/glfw/font/...
     std::string   msg;
 };
 
@@ -75,10 +83,13 @@ struct AppState {
     int                       stepIdx        = 11;
     std::chrono::steady_clock::time_point lastStepTime{};
 
-    // Logs (capped at 500)
+    // Logs — capped at 500 in memory; full history goes to a log file
+    // (path returned by Logger::path()).  Reads from the UI thread; writes
+    // protected by logs_mu so background threads (engine bridge, future
+    // stderr capture) can push safely.
     std::deque<LogEntry>      logs;
-    bool                      liveLogs       = true;
-    std::chrono::steady_clock::time_point lastSyntheticLog{};
+    mutable std::mutex        logs_mu;
+    bool                      liveLogs       = true;     // tail toggle in logs UI
 
     // Theme / preferences
     Theme                     theme          = Theme::Tracy;
@@ -104,7 +115,16 @@ struct AppState {
     void  setActiveHead(int H);
     void  setActiveTensor(std::string name);
 
+    // Primary log entry point — thread-safe.  Fans out to the in-memory
+    // ring + the on-disk log file (opened via Logger::init in main.cpp).
+    void  pushLog(Severity sev, std::string kind, std::string msg);
+    // Convenience overload — defaults to Severity::Info.  Kept for the
+    // common case of UI event logging.
     void  pushLog(std::string kind, std::string msg);
+
+    // Snapshot of the most recent N entries — UI rendering grabs this so
+    // the lock is held briefly.
+    std::vector<LogEntry> snapshotLogs(std::size_t n_tail) const;
 
     // Per-session UI defaults (theme already at sane defaults; this only
     // touches non-engine state so it's safe to always call on startup).
