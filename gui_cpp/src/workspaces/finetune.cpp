@@ -15,6 +15,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <cstdio>
 #include <string>
@@ -206,32 +207,41 @@ void DrawDiffRun(const ModelInfo& mi, const std::unordered_set<int>& frozen, Mod
 
 }  // namespace
 
-void DrawFineTuneWorkspace(AppState& s, Model& m) {
+// Layout: lora_config | center(layer_freeze / diff_run) | eval_diff
+void BuildFineTuneLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID lora_n, rest1, rest2, eval_n, freeze_n, diff_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.20f, &lora_n, &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.24f, &eval_n, &rest2);
+    ImGui::DockBuilderSplitNode(rest2,   ImGuiDir_Down,  0.32f, &diff_n, &freeze_n);
+
+    ImGui::DockBuilderDockWindow("ft.lora_config",  lora_n);
+    ImGui::DockBuilderDockWindow("ft.layer_freeze", freeze_n);
+    ImGui::DockBuilderDockWindow("ft.diff_run",     diff_n);
+    ImGui::DockBuilderDockWindow("ft.eval_diff",    eval_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitFineTunePanels(AppState& s, Model& m) {
     if (!s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint to configure finetuning");
+        if (ImGui::Begin("ft.lora_config", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint to configure finetuning");
+        }
+        ImGui::End();
         return;
     }
     static std::unordered_set<int> frozen{0, 1, 2, 3};
-
-    const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const float lw = 300.0f, rw = 320.0f;
-    const float cw = std::max(200.0f, W - lw - rw - 2 * gap);
-    const float bot_h = std::min(220.0f, H * 0.32f);
-    const float top_h = H - bot_h - gap;
-
-    ImGui::BeginChild("##ft_left", { lw, H }, ImGuiChildFlags_Borders);
-    DrawLoRAConfig(m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##ft_center", { cw, H });
-    ImGui::BeginChild("##ft_freeze", { cw, top_h }, ImGuiChildFlags_Borders);
-    DrawLayerFreeze(s.model, frozen); ImGui::EndChild();
-    ImGui::BeginChild("##ft_diff",   { cw, bot_h }, ImGuiChildFlags_Borders);
-    DrawDiffRun(s.model, frozen, m); ImGui::EndChild();
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##ft_right", { rw, H }, ImGuiChildFlags_Borders);
-    DrawEvalDiff(m); ImGui::EndChild();
+    if (ImGui::Begin("ft.lora_config",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLoRAConfig(m);
+    ImGui::End();
+    if (ImGui::Begin("ft.layer_freeze", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLayerFreeze(s.model, frozen);
+    ImGui::End();
+    if (ImGui::Begin("ft.diff_run",     nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDiffRun(s.model, frozen, m);
+    ImGui::End();
+    if (ImGui::Begin("ft.eval_diff",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawEvalDiff(m);
+    ImGui::End();
 }
 
 }  // namespace llob

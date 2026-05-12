@@ -11,6 +11,7 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
+#include "ui/dockhost.hpp"
 #include "ui/settings.hpp"
 #include "workspaces/workspaces.hpp"
 
@@ -68,10 +69,15 @@ MenuActions DrawMenubar(llob::AppState& s, llob::Model& m) {
         if (ImGui::BeginMenu("Probe"))  { ImGui::MenuItem("Train new probe…"); ImGui::MenuItem("Library"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Run"))    { ImGui::MenuItem("Run / Pause", "Space"); ImGui::MenuItem("Step"); ImGui::MenuItem("Reset"); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Settings…")) act.open_settings = true;
+            if (ImGui::MenuItem("Settings…", "Ctrl+,")) act.open_settings = true;
             ImGui::Separator();
             ImGui::MenuItem("Show raw pane", nullptr, &s.showRaw);
             ImGui::MenuItem("Animate live data", nullptr, &s.liveAnim);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset workspace layout")) {
+                llob::ResetWorkspaceLayout(WsDef(s.activeWs).short_label);
+                LLOB_LOG_INFO("ws", "reset layout for %s", WsDef(s.activeWs).short_label);
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help"))   { if (ImGui::MenuItem("About")) act.open_about = true; ImGui::EndMenu(); }
@@ -251,18 +257,44 @@ void HandleShortcuts(llob::AppState& s) {
     }
 }
 
-void DispatchWorkspace(llob::AppState& s, llob::Model& m) {
+// Build the active workspace's dock-tree layout if it hasn't been built yet
+// (or was reset via View ▸ Reset workspace layout).  Must be called BEFORE
+// any DockSpace() submission, per the canonical DockBuilder pattern.
+void BuildActiveLayoutIfNeeded(const llob::AppState& s) {
+    using namespace llob;
+    const char* kind = WsDef(s.activeWs).short_label;
+    if (!ShouldBuildWorkspaceLayout(kind)) return;
+    const ImGuiID id = WorkspaceDockId(kind);
+    switch (s.activeWs) {
+        case Workspace::Arch:   BuildArchitectureLayout(id); break;
+        case Workspace::Inf:    BuildInferenceLayout   (id); break;
+        case Workspace::Attn:   BuildAttentionLayout   (id); break;
+        case Workspace::Probes: BuildProbesLayout      (id); break;
+        case Workspace::Train:  BuildTrainingLayout    (id); break;
+        case Workspace::Ft:     BuildFineTuneLayout    (id); break;
+        case Workspace::Data:   BuildDatasetsLayout    (id); break;
+        case Workspace::Raw:    BuildRawTensorsLayout  (id); break;
+        case Workspace::Logs:   BuildLogsLayout        (id); break;
+        case Workspace::Count:  break;
+    }
+}
+
+// Submit the active workspace's panels as top-level windows.  They auto-
+// route into the workspace's DockSpace via the prior DockBuilderDockWindow
+// assignment.  Inactive workspaces' panels aren't submitted; their
+// dockspaces stay alive via KeepAliveOnly so the dock layout persists.
+void DispatchWorkspacePanels(llob::AppState& s, llob::Model& m) {
     using namespace llob;
     switch (s.activeWs) {
-        case Workspace::Arch:   DrawArchitectureWorkspace(s, m); break;
-        case Workspace::Inf:    DrawInferenceWorkspace   (s, m); break;
-        case Workspace::Attn:   DrawAttentionWorkspace   (s, m); break;
-        case Workspace::Probes: DrawProbesWorkspace      (s, m); break;
-        case Workspace::Train:  DrawTrainingWorkspace    (s, m); break;
-        case Workspace::Ft:     DrawFineTuneWorkspace    (s, m); break;
-        case Workspace::Data:   DrawDatasetsWorkspace    (s, m); break;
-        case Workspace::Raw:    DrawRawTensorsWorkspace  (s, m); break;
-        case Workspace::Logs:   DrawLogsWorkspace        (s, m); break;
+        case Workspace::Arch:   SubmitArchitecturePanels(s, m); break;
+        case Workspace::Inf:    SubmitInferencePanels   (s, m); break;
+        case Workspace::Attn:   SubmitAttentionPanels   (s, m); break;
+        case Workspace::Probes: SubmitProbesPanels      (s, m); break;
+        case Workspace::Train:  SubmitTrainingPanels    (s, m); break;
+        case Workspace::Ft:     SubmitFineTunePanels    (s, m); break;
+        case Workspace::Data:   SubmitDatasetsPanels    (s, m); break;
+        case Workspace::Raw:    SubmitRawTensorsPanels  (s, m); break;
+        case Workspace::Logs:   SubmitLogsPanels        (s, m); break;
         case Workspace::Count:  break;
     }
 }
@@ -402,7 +434,13 @@ int main() {
         DrawWorkspaceTabRow(s);
         ImGui::End();
 
-        // Workspace dockspace host.
+        // Workspace dockspace host.  Build the active workspace's layout
+        // BEFORE submitting any DockSpace (per the canonical DockBuilder
+        // pattern); inactive workspaces' dockspaces are still submitted
+        // each frame with KeepAliveOnly so their docked panels don't pop
+        // out when the user tabs away.
+        BuildActiveLayoutIfNeeded(s);
+
         const float top    = 28.0f + 26.0f;
         const float bottom = 22.0f;
         ImGui::SetNextWindowPos({vp->WorkPos.x, vp->WorkPos.y + top});
@@ -413,8 +451,19 @@ int main() {
                      ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus);
         ImGui::PopStyleVar();
-        DispatchWorkspace(s, model);
+        const char* active_kind = llob::WsDef(s.activeWs).short_label;
+        llob::SubmitWorkspaceDockSpace(active_kind, /*is_active=*/true);
+        for (int i = 0; i < llob::kNumWorkspaces; ++i) {
+            if (i == static_cast<int>(s.activeWs)) continue;
+            llob::SubmitWorkspaceDockSpace(
+                llob::WsDef(static_cast<llob::Workspace>(i)).short_label,
+                /*is_active=*/false);
+        }
         ImGui::End();
+
+        // Panels live at top level — they auto-route into the workspace's
+        // dockspace via the prior DockBuilderDockWindow assignment.
+        DispatchWorkspacePanels(s, model);
 
         DrawStatusBar(s);
 

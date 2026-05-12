@@ -16,6 +16,7 @@
 #include "ui/fmt.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <chrono>
 #include <cstdio>
@@ -212,23 +213,29 @@ void DrawMetrics(const AppState& s, Model& m) {
 
 }  // namespace
 
-void DrawLogsWorkspace(AppState& s, Model& m) {
-    const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const float right_w = 320.0f;
-    const float left_w  = std::max(200.0f, W - right_w - gap);
-    const float bot_h   = 200.0f;
-    const float top_h   = H - bot_h - gap;
+// Layout: log_stream | (filters / metrics)
+void BuildLogsLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
 
-    ImGui::BeginChild("##log_left", { left_w, H }, ImGuiChildFlags_Borders);
-    DrawLogStream(s); ImGui::EndChild(); ImGui::SameLine(0, gap);
+    ImGuiID stream_n, right_n, filters_n, metrics_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Right, 0.22f, &right_n,   &stream_n);
+    ImGui::DockBuilderSplitNode(right_n, ImGuiDir_Down,  0.45f, &metrics_n, &filters_n);
 
-    ImGui::BeginChild("##log_right", { right_w, H });
-    ImGui::BeginChild("##log_filters", { right_w, top_h }, ImGuiChildFlags_Borders);
-    DrawFilters(s); ImGui::EndChild();
-    ImGui::BeginChild("##log_metrics", { right_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawMetrics(s, m); ImGui::EndChild();
-    ImGui::EndChild();
+    ImGui::DockBuilderDockWindow("logs.stream",  stream_n);
+    ImGui::DockBuilderDockWindow("logs.filters", filters_n);
+    ImGui::DockBuilderDockWindow("logs.metrics", metrics_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitLogsPanels(AppState& s, Model& m) {
+    if (ImGui::Begin("logs.stream",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLogStream(s);
+    ImGui::End();
+    if (ImGui::Begin("logs.filters", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawFilters(s);
+    ImGui::End();
+    if (ImGui::Begin("logs.metrics", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawMetrics(s, m);
+    ImGui::End();
 }
 
 }  // namespace llob

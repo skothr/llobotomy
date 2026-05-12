@@ -17,6 +17,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <algorithm>
 #include <cstdio>
@@ -195,29 +196,44 @@ void DrawLayerLoss(const ModelInfo& mi, Model& m) {
 
 }  // namespace
 
-void DrawTrainingWorkspace(AppState& s, Model& m) {
+// Layout: top(run | ctrl) / mid(loss | grad) / bot layer_loss (full width)
+void BuildTrainingLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID top_n, rest1, mid_n, bot_n, run_n, ctrl_n, loss_n, grad_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Down,  0.78f, &rest1, &top_n);
+    ImGui::DockBuilderSplitNode(rest1,  ImGuiDir_Down,   0.50f, &bot_n, &mid_n);
+    ImGui::DockBuilderSplitNode(top_n,  ImGuiDir_Right,  0.20f, &ctrl_n, &run_n);
+    ImGui::DockBuilderSplitNode(mid_n,  ImGuiDir_Right,  0.20f, &grad_n, &loss_n);
+
+    ImGui::DockBuilderDockWindow("train.run",        run_n);
+    ImGui::DockBuilderDockWindow("train.ctrl",       ctrl_n);
+    ImGui::DockBuilderDockWindow("train.loss",       loss_n);
+    ImGui::DockBuilderDockWindow("train.grad",       grad_n);
+    ImGui::DockBuilderDockWindow("train.layer_loss", bot_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitTrainingPanels(AppState& s, Model& m) {
     if (!s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint to begin training");
+        if (ImGui::Begin("train.run", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint to begin training");
+        }
+        ImGui::End();
         return;
     }
-    const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const float right_w = 320.0f, left_w = std::max(200.0f, W - right_w - gap);
-    const float top_h = 180.0f, mid_h = std::max(160.0f, H - top_h - 200.0f - 2 * gap);
-    const float bot_h = H - top_h - mid_h - 2 * gap;
-
-    ImGui::BeginChild("##tr_top_left",  { left_w, top_h }, ImGuiChildFlags_Borders);
-    DrawRunSummary(m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-    ImGui::BeginChild("##tr_top_right", { right_w, top_h }, ImGuiChildFlags_Borders);
-    DrawControl(s, m); ImGui::EndChild(); (void)s;
-
-    ImGui::BeginChild("##tr_mid_left",  { left_w, mid_h }, ImGuiChildFlags_Borders);
-    DrawLossPlot(m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-    ImGui::BeginChild("##tr_mid_right", { right_w, mid_h }, ImGuiChildFlags_Borders);
-    DrawGradFlow(s.model, m); ImGui::EndChild();
-
-    ImGui::BeginChild("##tr_bot",       { W, bot_h }, ImGuiChildFlags_Borders);
-    DrawLayerLoss(s.model, m); ImGui::EndChild();
+    if (ImGui::Begin("train.run",        nullptr, ImGuiWindowFlags_NoTitleBar)) DrawRunSummary(m);
+    ImGui::End();
+    if (ImGui::Begin("train.ctrl",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawControl(s, m);
+    ImGui::End();
+    if (ImGui::Begin("train.loss",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLossPlot(m);
+    ImGui::End();
+    if (ImGui::Begin("train.grad",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawGradFlow(s.model, m);
+    ImGui::End();
+    if (ImGui::Begin("train.layer_loss", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLayerLoss(s.model, m);
+    ImGui::End();
 }
 
 }  // namespace llob

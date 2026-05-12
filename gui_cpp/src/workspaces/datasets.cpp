@@ -16,6 +16,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <cstdio>
 #include <span>
@@ -169,31 +170,37 @@ void DrawDatasetStats(const std::string& dataset, Model& m) {
 
 }  // namespace
 
-void DrawDatasetsWorkspace(AppState& s, Model& m) {
+// Layout: list | sample | (stats + tokens tabbed)
+void BuildDatasetsLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID list_n, rest1, right_n, sample_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.22f, &list_n,  &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.22f, &right_n, &sample_n);
+
+    ImGui::DockBuilderDockWindow("data.list",   list_n);
+    ImGui::DockBuilderDockWindow("data.sample", sample_n);
+    ImGui::DockBuilderDockWindow("data.stats",  right_n);
+    ImGui::DockBuilderDockWindow("data.tokens", right_n);   // tabbed with stats
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitDatasetsPanels(AppState& s, Model& m) {
     static int         dsSel = 0;
     static std::string dsName;
     static int         sampleId = 4182;
 
-    const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const bool  raw = s.showRaw;
-    const float lw = 320.0f, rw = 280.0f, raw_w = raw ? 160.0f : 0.0f;
-    const float cw = std::max(200.0f, W - lw - rw - raw_w - 3 * gap);
-
-    ImGui::BeginChild("##ds_left",  { lw, H }, ImGuiChildFlags_Borders);
-    DrawDatasetList(dsSel, dsName, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##ds_center",{ cw, H }, ImGuiChildFlags_Borders);
-    DrawSampleBrowser(dsName, sampleId, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##ds_right", { rw, H }, ImGuiChildFlags_Borders);
-    DrawDatasetStats(dsName, m); ImGui::EndChild();
-
-    if (raw) {
-        ImGui::SameLine(0, gap);
-        ImGui::BeginChild("##ds_raw", { raw_w, H }, ImGuiChildFlags_Borders);
-        DrawTitleBar("token_ids", "0x", "u16", "ds-tokens");
-        if (ImGui::BeginChild("##tk_body", ImVec2(0, 0))) {
+    if (ImGui::Begin("data.list",   nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDatasetList(dsSel, dsName, m);
+    ImGui::End();
+    if (ImGui::Begin("data.sample", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawSampleBrowser(dsName, sampleId, m);
+    ImGui::End();
+    if (ImGui::Begin("data.stats",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDatasetStats(dsName, m);
+    ImGui::End();
+    if (s.showRaw) {
+        if (ImGui::Begin("data.tokens", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            DrawTitleBar("token_ids", "0x", "u16", "ds-tokens");
             // [DATA HOOK] Model::getTokenIds(dataset, sampleId, n) — the
             // raw token id sequence for hex display.  Real backend: pull
             // from the cached encoded sample.
@@ -205,9 +212,8 @@ void DrawDatasetsWorkspace(AppState& s, Model& m) {
             } else {
                 HexView(buf, 0, 3, 28, HexMode::Hex);
             }
-            ImGui::EndChild();
         }
-        ImGui::EndChild();
+        ImGui::End();
     }
 }
 

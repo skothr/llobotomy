@@ -17,6 +17,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <cstdio>
 #include <cstring>
@@ -379,33 +380,39 @@ void DrawExport(AppState& s, Model& m) {
 
 }  // namespace
 
-void DrawProbesWorkspace(AppState& s, Model& m) {
+// Layout: feat_browser | center(feat_card / sae_train) | right(ops / export)
+void BuildProbesLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID fb_n, rest1, rest2, right_n, card_n, sae_n, ops_n, exp_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.22f, &fb_n,    &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.26f, &right_n, &rest2);
+    ImGui::DockBuilderSplitNode(rest2,   ImGuiDir_Down,  0.30f, &sae_n,   &card_n);
+    ImGui::DockBuilderSplitNode(right_n, ImGuiDir_Down,  0.45f, &exp_n,   &ops_n);
+
+    ImGui::DockBuilderDockWindow("probes.feat_browser", fb_n);
+    ImGui::DockBuilderDockWindow("probes.feat_card",    card_n);
+    ImGui::DockBuilderDockWindow("probes.sae_train",    sae_n);
+    ImGui::DockBuilderDockWindow("probes.ops",          ops_n);
+    ImGui::DockBuilderDockWindow("probes.export",       exp_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitProbesPanels(AppState& s, Model& m) {
     static int  feature = 2381;
     static char filter[64] = {};
-
-    const float W = ImGui::GetContentRegionAvail().x;
-    const float H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f, lw = 320.0f, rw = 320.0f;
-    const float cw = std::max(200.0f, W - lw - rw - 2 * gap);
-    const float bot_h = std::min(220.0f, H * 0.30f);
-    const float top_h = H - bot_h - gap;
-
-    ImGui::BeginChild("##pr_left", { lw, H }, ImGuiChildFlags_Borders);
-    DrawFeatureBrowser(s, m, feature, filter); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##pr_center", { cw, H });
-    ImGui::BeginChild("##pr_card", { cw, top_h }, ImGuiChildFlags_Borders);
-    DrawFeatureCard(feature, m); ImGui::EndChild();
-    ImGui::BeginChild("##pr_sae",  { cw, bot_h }, ImGuiChildFlags_Borders);
-    DrawSAETrain(m); ImGui::EndChild();
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##pr_right", { rw, H });
-    ImGui::BeginChild("##pr_ops", { rw, top_h }, ImGuiChildFlags_Borders);
-    DrawProbeOps(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##pr_exp", { rw, bot_h }, ImGuiChildFlags_Borders);
-    DrawExport(s, m); ImGui::EndChild();
-    ImGui::EndChild();
+    if (ImGui::Begin("probes.feat_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawFeatureBrowser(s, m, feature, filter);
+    ImGui::End();
+    if (ImGui::Begin("probes.feat_card",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawFeatureCard   (feature, m);
+    ImGui::End();
+    if (ImGui::Begin("probes.sae_train",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawSAETrain      (m);
+    ImGui::End();
+    if (ImGui::Begin("probes.ops",          nullptr, ImGuiWindowFlags_NoTitleBar)) DrawProbeOps      (s, m);
+    ImGui::End();
+    if (ImGui::Begin("probes.export",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawExport        (s, m);
+    ImGui::End();
 }
 
 }  // namespace llob

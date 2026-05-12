@@ -16,6 +16,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <cstdio>
 #include <string>
@@ -230,36 +231,44 @@ void DrawAblQueue(AppState& s, Model& m) {
 
 }  // namespace
 
-void DrawAttentionWorkspace(AppState& s, Model& m) {
+// Layout: head_browser | center(main / stats) | right(qkv / abl)
+void BuildAttentionLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID hb_n, rest1, rest2, right_n, main_n, stats_n, qkv_n, abl_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.18f, &hb_n,    &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.24f, &right_n, &rest2);
+    ImGui::DockBuilderSplitNode(rest2,   ImGuiDir_Down,  0.32f, &stats_n, &main_n);
+    ImGui::DockBuilderSplitNode(right_n, ImGuiDir_Down,  0.45f, &abl_n,   &qkv_n);
+
+    ImGui::DockBuilderDockWindow("attn.head_browser", hb_n);
+    ImGui::DockBuilderDockWindow("attn.main",         main_n);
+    ImGui::DockBuilderDockWindow("attn.stats",        stats_n);
+    ImGui::DockBuilderDockWindow("attn.qkv",          qkv_n);
+    ImGui::DockBuilderDockWindow("attn.abl",          abl_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitAttentionPanels(AppState& s, Model& m) {
     if (!s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        if (ImGui::Begin("attn.head_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        }
+        ImGui::End();
         return;
     }
-    const float W = ImGui::GetContentRegionAvail().x;
-    const float H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const float left_w  = 260.0f;
-    const float right_w = 320.0f;
-    const float center_w= std::max(200.0f, W - left_w - right_w - 2 * gap);
-    const float bot_h   = std::min(240.0f, H * 0.32f);
-    const float top_h   = H - bot_h - gap;
-
-    ImGui::BeginChild("##at_left", { left_w, H }, ImGuiChildFlags_Borders);
-    DrawHeadBrowser(s, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##at_center", { center_w, H });
-    ImGui::BeginChild("##at_main", { center_w, top_h }, ImGuiChildFlags_Borders);
-    DrawAttnMain(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##at_stats", { center_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawHeadStats(s, m); ImGui::EndChild();
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##at_right", { right_w, H });
-    ImGui::BeginChild("##at_qkv", { right_w, top_h }, ImGuiChildFlags_Borders);
-    DrawQKV(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##at_abl", { right_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawAblQueue(s, m); ImGui::EndChild();
-    ImGui::EndChild();
+    if (ImGui::Begin("attn.head_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawHeadBrowser(s, m);
+    ImGui::End();
+    if (ImGui::Begin("attn.main",         nullptr, ImGuiWindowFlags_NoTitleBar)) DrawAttnMain   (s, m);
+    ImGui::End();
+    if (ImGui::Begin("attn.stats",        nullptr, ImGuiWindowFlags_NoTitleBar)) DrawHeadStats  (s, m);
+    ImGui::End();
+    if (ImGui::Begin("attn.qkv",          nullptr, ImGuiWindowFlags_NoTitleBar)) DrawQKV        (s, m);
+    ImGui::End();
+    if (ImGui::Begin("attn.abl",          nullptr, ImGuiWindowFlags_NoTitleBar)) DrawAblQueue   (s, m);
+    ImGui::End();
 }
 
 }  // namespace llob

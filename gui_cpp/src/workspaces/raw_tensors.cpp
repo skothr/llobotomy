@@ -15,6 +15,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <cstdio>
 #include <span>
@@ -223,33 +224,41 @@ void DrawDiffView(const std::string& name, Model& m) {
 
 }  // namespace
 
-void DrawRawTensorsWorkspace(AppState& s, Model& m) {
-    // This workspace shows checkpoint tensors directly; without a model
-    // loaded, the state_dict is empty and there's nothing to inspect.
+// Layout: state_dict | center(view / diff) | stats
+void BuildRawTensorsLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID sd_n, rest1, rest2, stats_n, view_n, diff_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.22f, &sd_n,    &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.22f, &stats_n, &rest2);
+    ImGui::DockBuilderSplitNode(rest2,   ImGuiDir_Down,  0.30f, &diff_n,  &view_n);
+
+    ImGui::DockBuilderDockWindow("raw.sd",    sd_n);
+    ImGui::DockBuilderDockWindow("raw.view",  view_n);
+    ImGui::DockBuilderDockWindow("raw.diff",  diff_n);
+    ImGui::DockBuilderDockWindow("raw.stats", stats_n);
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitRawTensorsPanels(AppState& s, Model& m) {
     const auto entries = m.getStateDict();
     if (entries.empty() && !s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint to browse tensors");
+        if (ImGui::Begin("raw.sd", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint to browse tensors");
+        }
+        ImGui::End();
         return;
     }
-    const float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const float lw = 320.0f, rw = 280.0f;
-    const float cw = std::max(200.0f, W - lw - rw - 2 * gap);
-    const float bot_h = std::min(220.0f, H * 0.30f);
-    const float top_h = H - bot_h - gap;
-
-    ImGui::BeginChild("##rt_sd", { lw, H }, ImGuiChildFlags_Borders);
-    DrawStateDict(s, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##rt_center", { cw, H });
-    ImGui::BeginChild("##rt_view", { cw, top_h }, ImGuiChildFlags_Borders);
-    DrawTensorView(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##rt_diff", { cw, bot_h }, ImGuiChildFlags_Borders);
-    DrawDiffView(s.activeTensor, m); ImGui::EndChild();
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##rt_stats", { rw, H }, ImGuiChildFlags_Borders);
-    DrawTensorStats(s.activeTensor, m); ImGui::EndChild();
+    if (ImGui::Begin("raw.sd",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawStateDict(s, m);
+    ImGui::End();
+    if (ImGui::Begin("raw.view",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawTensorView(s, m);
+    ImGui::End();
+    if (ImGui::Begin("raw.diff",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDiffView(s.activeTensor, m);
+    ImGui::End();
+    if (ImGui::Begin("raw.stats", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawTensorStats(s.activeTensor, m);
+    ImGui::End();
 }
 
 }  // namespace llob

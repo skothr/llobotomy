@@ -715,58 +715,55 @@ void DrawRawHex(AppState& s, Model& m) {
 
 }  // namespace
 
-// Public entry — splits into outline | center | inspector | [rawhex] using
-// child windows with explicit widths plus a flexible center.  Center is
-// itself split into arch_map (top) + (dist | ops) (bottom).
-void DrawArchitectureWorkspace(AppState& s, Model& m) {
+// Layout: outline | center(map / dist|ops) | (inspector + raw tabbed)
+//
+// dock tree:
+//
+//   root ─split_left(0.18)─→ outline,  rest1
+//   rest1 ─split_right(0.22)─→ rest2,  right (inspector + raw tabbed)
+//   rest2 ─split_down(0.30)─→ map,     bot
+//   bot   ─split_left(0.55)─→ dist,    ops
+void BuildArchitectureLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID outline_n, rest1, rest2, right_n, map_n, bot_n, dist_n, ops_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.18f, &outline_n, &rest1);
+    ImGui::DockBuilderSplitNode(rest1,  ImGuiDir_Right, 0.22f, &right_n,   &rest2);
+    ImGui::DockBuilderSplitNode(rest2,  ImGuiDir_Down,  0.30f, &bot_n,     &map_n);
+    ImGui::DockBuilderSplitNode(bot_n,  ImGuiDir_Left,  0.55f, &dist_n,    &ops_n);
+
+    ImGui::DockBuilderDockWindow("arch.outline",   outline_n);
+    ImGui::DockBuilderDockWindow("arch.map",       map_n);
+    ImGui::DockBuilderDockWindow("arch.dist",      dist_n);
+    ImGui::DockBuilderDockWindow("arch.ops",       ops_n);
+    ImGui::DockBuilderDockWindow("arch.inspector", right_n);
+    ImGui::DockBuilderDockWindow("arch.raw",       right_n);   // tabbed with inspector
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitArchitecturePanels(AppState& s, Model& m) {
     if (!s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        if (ImGui::Begin("arch.outline", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        }
+        ImGui::End();
         return;
     }
-    const float full_w = ImGui::GetContentRegionAvail().x;
-    const float full_h = ImGui::GetContentRegionAvail().y;
-    const bool  raw = s.showRaw;
-
-    const float outline_w = 240.0f;
-    const float inspect_w = 320.0f;
-    const float rawhex_w  = raw ? 160.0f : 0.0f;
-    const float gap = 1.0f;
-    const float center_w  = std::max(120.0f, full_w - outline_w - inspect_w - rawhex_w - 3 * gap);
-    const float bot_h     = std::min(220.0f, full_h * 0.35f);
-    const float top_h     = full_h - bot_h - gap;
-    const float dist_w    = std::max(160.0f, center_w - 320.0f - gap);
-
-    // Outline (left, full height)
-    ImGui::BeginChild("##arch_outline", { outline_w, full_h }, ImGuiChildFlags_Borders);
-    DrawOutline(s, m);
-    ImGui::EndChild();
-    ImGui::SameLine(0, gap);
-
-    // Center column
-    ImGui::BeginChild("##arch_center", { center_w, full_h });
-    ImGui::BeginChild("##arch_map", { center_w, top_h }, ImGuiChildFlags_Borders);
-    DrawArchMap(s, m);
-    ImGui::EndChild();
-    ImGui::BeginChild("##arch_dist", { dist_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawDist(s, m);
-    ImGui::EndChild();
-    ImGui::SameLine(0, gap);
-    ImGui::BeginChild("##arch_ops", { center_w - dist_w - gap, bot_h }, ImGuiChildFlags_Borders);
-    DrawOps(s, m);
-    ImGui::EndChild();
-    ImGui::EndChild();
-    ImGui::SameLine(0, gap);
-
-    // Inspector (right, full height)
-    ImGui::BeginChild("##arch_insp", { inspect_w, full_h }, ImGuiChildFlags_Borders);
-    DrawInspector(s, m);
-    ImGui::EndChild();
-
-    if (raw) {
-        ImGui::SameLine(0, gap);
-        ImGui::BeginChild("##arch_raw", { rawhex_w, full_h }, ImGuiChildFlags_Borders);
-        DrawRawHex(s, m);
-        ImGui::EndChild();
+    if (ImGui::Begin("arch.outline",   nullptr, ImGuiWindowFlags_NoTitleBar)) DrawOutline  (s, m);
+    ImGui::End();
+    if (ImGui::Begin("arch.map",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawArchMap  (s, m);
+    ImGui::End();
+    if (ImGui::Begin("arch.dist",      nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDist     (s, m);
+    ImGui::End();
+    if (ImGui::Begin("arch.ops",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawOps      (s, m);
+    ImGui::End();
+    if (ImGui::Begin("arch.inspector", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawInspector(s, m);
+    ImGui::End();
+    if (s.showRaw) {
+        if (ImGui::Begin("arch.raw",   nullptr, ImGuiWindowFlags_NoTitleBar)) DrawRawHex   (s, m);
+        ImGui::End();
     }
 }
 

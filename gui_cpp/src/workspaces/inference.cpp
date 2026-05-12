@@ -16,6 +16,7 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>           // DockBuilder*
 
 #include <algorithm>
 #include <cstdio>
@@ -400,52 +401,55 @@ void DrawProbeControls(AppState& s, Model& m) {
 
 }  // namespace
 
-void DrawInferenceWorkspace(AppState& s, Model& m) {
+// Layout: resid | center(fwd / strip) | right(probe / pctrl + raw tabbed)
+void BuildInferenceLayout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+    ImGuiID resid_n, rest1, rest2, right_n, probe_n, pctrl_n, fwd_n, strip_n;
+    ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left,  0.20f, &resid_n, &rest1);
+    ImGui::DockBuilderSplitNode(rest1,   ImGuiDir_Right, 0.24f, &right_n, &rest2);
+    ImGui::DockBuilderSplitNode(right_n, ImGuiDir_Down,  0.45f, &pctrl_n, &probe_n);
+    ImGui::DockBuilderSplitNode(rest2,   ImGuiDir_Down,  0.30f, &strip_n, &fwd_n);
+
+    ImGui::DockBuilderDockWindow("inf.resid", resid_n);
+    ImGui::DockBuilderDockWindow("inf.fwd",   fwd_n);
+    ImGui::DockBuilderDockWindow("inf.strip", strip_n);
+    ImGui::DockBuilderDockWindow("inf.probe", probe_n);
+    ImGui::DockBuilderDockWindow("inf.pctrl", pctrl_n);
+    ImGui::DockBuilderDockWindow("inf.raw",   pctrl_n);     // tabbed with pctrl
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void SubmitInferencePanels(AppState& s, Model& m) {
     if (!s.hasModel()) {
-        EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        if (ImGui::Begin("inf.resid", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        }
+        ImGui::End();
         return;
     }
-    const float W = ImGui::GetContentRegionAvail().x;
-    const float H = ImGui::GetContentRegionAvail().y;
-    const float gap = 1.0f;
-    const bool  raw = s.showRaw;
-    const float left_w   = 320.0f;
-    const float right_w  = 360.0f;
-    const float rraw_w   = raw ? 170.0f : 0.0f;
-    const float center_w = std::max(200.0f, W - left_w - right_w - rraw_w - 3 * gap);
-    const float bot_h    = std::min(220.0f, H * 0.30f);
-    const float top_h    = H - bot_h - gap;
-
-    ImGui::BeginChild("##inf_left", { left_w, H }, ImGuiChildFlags_Borders);
-    DrawResidualFlow(s, m); ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##inf_center", { center_w, H });
-    ImGui::BeginChild("##inf_fwd",   { center_w, top_h }, ImGuiChildFlags_Borders);
-    DrawForwardPass(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##inf_strip", { center_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawTokenStrip(s, m);  ImGui::EndChild();
-    ImGui::EndChild(); ImGui::SameLine(0, gap);
-
-    ImGui::BeginChild("##inf_right", { right_w, H });
-    ImGui::BeginChild("##inf_probe", { right_w, top_h }, ImGuiChildFlags_Borders);
-    DrawProbePanel(s, m); ImGui::EndChild();
-    ImGui::BeginChild("##inf_pctrl", { right_w, bot_h }, ImGuiChildFlags_Borders);
-    DrawProbeControls(s, m); ImGui::EndChild();
-    ImGui::EndChild();
-
-    if (raw) {
-        ImGui::SameLine(0, gap);
-        ImGui::BeginChild("##inf_raw", { rraw_w, H }, ImGuiChildFlags_Borders);
-        DrawTitleBar("raw_tensor", "0x", "fp16", "raw");
-        if (ImGui::BeginChild("##raw_body", ImVec2(0, 0))) {
+    if (ImGui::Begin("inf.resid", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawResidualFlow (s, m);
+    ImGui::End();
+    if (ImGui::Begin("inf.fwd",   nullptr, ImGuiWindowFlags_NoTitleBar)) DrawForwardPass  (s, m);
+    ImGui::End();
+    if (ImGui::Begin("inf.strip", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawTokenStrip   (s, m);
+    ImGui::End();
+    if (ImGui::Begin("inf.probe", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawProbePanel   (s, m);
+    ImGui::End();
+    if (ImGui::Begin("inf.pctrl", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawProbeControls(s, m);
+    ImGui::End();
+    if (s.showRaw) {
+        if (ImGui::Begin("inf.raw", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            DrawTitleBar("raw_tensor", "0x", "fp16", "raw");
             // [DATA HOOK] Model::getActivation(layer, kind, n) — raw values
-            // for hex-view display.  Real backend: read the `resid_post`
-            // tensor for the active layer/token.
+            // for hex display.  Real backend reads `resid_post` for the
+            // active layer/token.
             const auto buf = m.getActivation(s.activeLayer, 0, 256);
             HexView(buf, 0, 4, 28, HexMode::Fp16);
-            ImGui::EndChild();
         }
-        ImGui::EndChild();
+        ImGui::End();
     }
 }
 
