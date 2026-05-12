@@ -274,6 +274,9 @@ void HandleShortcuts(llob::AppState& s, MenuActions& act) {
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_T))      act.new_project   = true;
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_W))      act.close_project = true;
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Q))      act.quit          = true;
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_0) && s.activeWs == Workspace::Arch) {
+        s.archRequestFit = true;
+    }
 
     // Cycle workspace via Ctrl+Tab / Ctrl+Shift+Tab (browser-style)
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Tab)) {

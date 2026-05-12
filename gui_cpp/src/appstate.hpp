@@ -77,6 +77,10 @@ struct AppState {
     std::unordered_set<int>   expandedLayers;
     std::unordered_set<int>   skippedLayers;
     float                     archZoom       = 1.0f;
+    // One-shot flag — set by Ctrl+0 or the (+) fit button; consumed by
+    // DrawArchMap on the next frame (it has the geometry info needed to
+    // compute the fit ratio against the current viewport).
+    bool                      archRequestFit = false;
 
     // Inference run loop
     bool                      running        = false;

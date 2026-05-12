@@ -218,7 +218,9 @@ void DrawArchMap(AppState& s, Model& m) {
         ImGui::SameLine();
         if (ImGui::SmallButton("+"))    s.archZoom = std::min(2.0f, s.archZoom + 0.1f);
         ImGui::SameLine();
-        if (ImGui::SmallButton("(+) fit")) s.archZoom = 1.0f;
+        // Defers the actual fit calculation to the body below, where the
+        // unscaled content size (W, totalH) is in scope.
+        if (ImGui::SmallButton("(+) fit")) s.archRequestFit = true;
     });
 
     if (!ImGui::BeginChild("##archmap_body", ImVec2(0, 0), ImGuiChildFlags_None,
@@ -512,11 +514,44 @@ void DrawArchMap(AppState& s, Model& m) {
     // Reserve scrolling area.
     ImGui::Dummy({W * Z, totalH * Z});
 
-    // Mouse-wheel zoom
+    // Fit-to-viewport (one-shot) — fires the frame after Ctrl+0 / "(+) fit"
+    // is pressed.  Compute the largest zoom that still fits the unscaled
+    // content (W, totalH) into the viewport, then reset scroll so the
+    // origin lands at the top-left.
+    if (s.archRequestFit) {
+        s.archRequestFit = false;
+        const ImVec2 avail = ImGui::GetWindowSize();
+        const float fit_x = (W      > 0.0f) ? avail.x / W      : 1.0f;
+        const float fit_y = (totalH > 0.0f) ? avail.y / totalH : 1.0f;
+        s.archZoom = std::clamp(std::min(fit_x, fit_y), 0.3f, 3.0f);
+        ImGui::SetScrollX(0);
+        ImGui::SetScrollY(0);
+    }
+
+    // Mouse-wheel zoom — anchored at the cursor so the point under the
+    // mouse stays put.  Ctrl+wheel = fine zoom (5% step); plain wheel
+    // = coarse zoom (10% step).  No more "Ctrl required" confusion —
+    // the wheel zooms by default in the arch map, matching CAD/editor
+    // expectations.
     if (ImGui::IsWindowHovered()) {
         const float wheel = ImGui::GetIO().MouseWheel;
-        if (wheel != 0 && ImGui::GetIO().KeyCtrl) {
-            s.archZoom = std::clamp(s.archZoom + wheel * 0.1f, 0.3f, 3.0f);
+        if (wheel != 0.0f) {
+            const float step = ImGui::GetIO().KeyCtrl ? 0.05f : 0.10f;
+            const float new_zoom = std::clamp(s.archZoom + wheel * step, 0.3f, 3.0f);
+            if (new_zoom != s.archZoom) {
+                // Anchor: keep the world point under the cursor stationary
+                // on screen.  Translate by the delta in cursor offset.
+                const ImVec2 cursor = ImGui::GetMousePos();
+                const ImVec2 win    = ImGui::GetWindowPos();
+                const float  sx     = ImGui::GetScrollX();
+                const float  sy     = ImGui::GetScrollY();
+                const float  rel_x  = cursor.x - win.x + sx;
+                const float  rel_y  = cursor.y - win.y + sy;
+                const float  ratio  = new_zoom / s.archZoom;
+                ImGui::SetScrollX(sx + rel_x * (ratio - 1.0f));
+                ImGui::SetScrollY(sy + rel_y * (ratio - 1.0f));
+                s.archZoom = new_zoom;
+            }
         }
     }
     ImGui::EndChild();
