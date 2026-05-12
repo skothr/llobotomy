@@ -11,6 +11,7 @@
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
+#include "ui/dialogs.hpp"
 #include "ui/dockhost.hpp"
 #include "ui/settings.hpp"
 #include "workspaces/workspaces.hpp"
@@ -468,6 +469,7 @@ int main() {
 
         // Dispatch wired actions
         llob::DrawSettingsModal(s, menu.open_settings);
+        llob::DrawAboutDialog  (s, menu.open_about);
         if (menu.quit) glfwSetWindowShouldClose(win, GLFW_TRUE);
         if (menu.new_project) {
             // Same logic as the + button — monotonic suffix keeps id +
@@ -493,9 +495,8 @@ int main() {
                 LLOB_LOG_INFO("project", "closed %s", name.c_str());
             }
         }
-        // Phase 3 will dispatch menu.open_ckpt / save_probe / export_state
-        // and Phase 7 menu.open_about.
-        (void)menu.open_about; (void)menu.open_ckpt;
+        // Phase 3 will dispatch menu.open_ckpt / save_probe / export_state.
+        (void)menu.open_ckpt;
         (void)menu.save_probe; (void)menu.export_state;
 
         // Project tabs strip (just under the menubar).
@@ -551,6 +552,10 @@ int main() {
         DispatchWorkspacePanels(s, model);
 
         DrawStatusBar(s);
+
+        // Bottom-right error toast — surfaces the most recent WARN/ERROR/
+        // FATAL log entry for ~5 seconds.  Click to dismiss earlier.
+        llob::DrawErrorToast(s);
 
         // Frame timing
         const auto now = std::chrono::steady_clock::now();
