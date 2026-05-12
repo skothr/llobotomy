@@ -22,6 +22,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 namespace {
 
@@ -233,20 +234,29 @@ int main() {
     };
     const float kFontSize = 14.0f;
     const char* kPrimary  = "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf";
-    // Two symbol fallbacks: DejaVu Sans Mono covers arrows / common math /
-    // misc-technical with stable monospace metrics; Noto Sans Symbols2 fills
-    // the geometric-shape and dingbat gaps DejaVu lacks.  Merge order matters
-    // — earlier entries win; DejaVu first so arrows take its arrow glyph.
+    // Symbol fallbacks, merged in priority order (earlier wins on overlap):
+    // JetBrains Mono first — it's the closest tonal match to Ubuntu Mono and
+    // covers most of the Unicode chars Ubuntu Mono lacks (arrows, geometric
+    // shapes, math operators) without metric jitter.  DejaVu Sans Mono fills
+    // any remaining gaps with stable monospace metrics; Noto Sans Symbols2
+    // mops up the long-tail geometric / dingbat glyphs.
     const char* kFallbacks[] = {
+        "/home/skothr/.fonts/jetbrains-mono/JetBrainsMono-Regular.ttf",
+        "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
         nullptr,
     };
-    if (io.Fonts->AddFontFromFileTTF(kPrimary, kFontSize, nullptr, kSymbolRanges)) {
+    // ImGui asserts (rather than returning nullptr) on a missing file, so
+    // existence-check every path before handing it to AddFontFromFileTTF.
+    if (std::filesystem::exists(kPrimary) &&
+        io.Fonts->AddFontFromFileTTF(kPrimary, kFontSize, nullptr, kSymbolRanges)) {
         ImFontConfig merge{};
         merge.MergeMode = true;
         for (const char** fp = kFallbacks; *fp; ++fp) {
-            io.Fonts->AddFontFromFileTTF(*fp, kFontSize, &merge, kSymbolRanges);
+            if (std::filesystem::exists(*fp)) {
+                io.Fonts->AddFontFromFileTTF(*fp, kFontSize, &merge, kSymbolRanges);
+            }
         }
     } else {
         std::fprintf(stderr, "[font] Ubuntu Mono not found at %s — using ImGui default\n",
