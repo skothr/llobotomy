@@ -8,6 +8,7 @@
 
 #include "appstate.hpp"
 #include "logger.hpp"
+#include "model/hf_proxy_engine.hpp"
 #include "model/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
@@ -445,8 +446,32 @@ int main() {
     s.seedMockData();
 #endif
 
-    llob::MockModel mm;
-    llob::Model&    model = mm;
+    // Backend selection — LLOB_BACKEND env var picks the implementation
+    // (mock | hf), LLOB_BACKEND_URL overrides the FastAPI base URL when
+    // backend=hf.  Defaults to the mock so a vanilla launch keeps showing
+    // the demo data (or sentinels in mock-OFF builds).  See
+    // docs/HFPROXY_PLAN.md and ENGINE_API.md §2.3.
+    std::unique_ptr<llob::Model> backend;
+    {
+        const char* sel    = std::getenv("LLOB_BACKEND");
+        const std::string choice = sel ? sel : "mock";
+        if (choice == "hf") {
+            const char* url_env = std::getenv("LLOB_BACKEND_URL");
+            std::string base    = url_env ? url_env : "http://127.0.0.1:8000";
+            LLOB_LOG_INFO("init", "backend=hf base=%s", base.c_str());
+            backend = std::make_unique<llob::HFProxyEngine>(std::move(base));
+        } else {
+            if (choice != "mock") {
+                LLOB_LOG_WARN("init",
+                              "unknown LLOB_BACKEND='%s' — falling back to mock",
+                              choice.c_str());
+            } else {
+                LLOB_LOG_INFO("init", "backend=mock");
+            }
+            backend = std::make_unique<llob::MockModel>();
+        }
+    }
+    llob::Model& model = *backend;
     s.loadFromModel(model);  // populate AppState.model from a real backend
 
     auto last = std::chrono::steady_clock::now();

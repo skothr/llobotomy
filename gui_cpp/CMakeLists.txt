@@ -60,6 +60,19 @@ target_include_directories(imgui_file_dialog SYSTEM PUBLIC
 )
 target_link_libraries(imgui_file_dialog PUBLIC imgui)
 
+# Header-only HTTP client (cpp-httplib v0.44.0, MIT, libs/cpp-httplib/LICENSE)
+# and JSON for Modern C++ (nlohmann/json v3.12.0, MIT, libs/nlohmann_json/LICENSE.MIT).
+# Both are SYSTEM includes so their warnings don't drown out our own code's.
+add_library(cpp_httplib INTERFACE)
+target_include_directories(cpp_httplib SYSTEM INTERFACE
+  ${CMAKE_CURRENT_SOURCE_DIR}/libs/cpp-httplib
+)
+
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json SYSTEM INTERFACE
+  ${CMAKE_CURRENT_SOURCE_DIR}/libs/nlohmann_json
+)
+
 # ---------------------------------------------------------------------------
 # llobotomy executable
 # ---------------------------------------------------------------------------
@@ -70,6 +83,7 @@ add_executable(llobotomy
   src/keybindings.cpp
   src/logger.cpp
   src/model/mock_model.cpp
+  src/model/hf_proxy_engine.cpp
   src/ui/colormap.cpp
   src/ui/chrome.cpp
   src/ui/dialogs.cpp
@@ -90,7 +104,7 @@ add_executable(llobotomy
   src/workspaces/logs.cpp
 )
 target_include_directories(llobotomy PRIVATE src libs)
-target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog)
+target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog cpp_httplib nlohmann_json)
 target_compile_options(llobotomy PRIVATE
   -Wall -Wextra -Wpedantic
   -Wno-c99-designator

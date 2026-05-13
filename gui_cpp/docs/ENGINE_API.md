@@ -394,7 +394,8 @@ device tag.  Optional polish.
 - Cons: per-call latency (~1ms), JSON serialisation overhead.
 - **The current `testing/gui/backend/` is exactly this**; the C++ port can
   reuse it almost verbatim.  Add a thin `HFProxyEngine : Model` that wraps
-  HTTP/WS calls.
+  HTTP/WS calls.  **Phase 1 is shipped — see [`HFPROXY_PLAN.md`](HFPROXY_PLAN.md)
+  for the per-method status table and the staged plan.**
 
 ### 6.2 llama.cpp (native C++)
 

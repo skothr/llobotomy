@@ -1,0 +1,7 @@
+build/
+build-real/
+*.o
+*.obj
+compile_commands.json
+imgui.ini
+llobotomy.log
