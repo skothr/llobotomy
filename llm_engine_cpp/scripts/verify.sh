@@ -49,11 +49,17 @@ run_mode() {
     # Note: deep tests should self-skip with exit 0 when their required
     # fixtures / env vars are absent. We still fail this script on a
     # real deep-test failure.
-    if ctest --test-dir "$build_dir" -L deep 2>/dev/null | grep -q "Test #"; then
+    #
+    # Detection: `ctest -N -L deep` lists matching tests; the trailing
+    # summary line "Total Tests: N" tells us whether any are registered.
+    local deep_count
+    deep_count=$(ctest --test-dir "$build_dir" -N -L deep 2>/dev/null \
+                 | sed -n 's/^Total Tests: \([0-9]\+\)/\1/p')
+    if [[ "${deep_count:-0}" -gt 0 ]]; then
         ctest --test-dir "$build_dir" -L deep --output-on-failure 2>&1 \
             | sed 's/^/    /' \
             || { err "deep tests failed (${mode})"; return 1; }
-        ok "deep ran (${mode})"
+        ok "deep ran (${mode}) — ${deep_count} test(s)"
     else
         warn "deep tier has no registered tests (yet)"
     fi
