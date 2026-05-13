@@ -9,7 +9,11 @@
 #include "appstate.hpp"
 #include "logger.hpp"
 #include "llm_engine/hf_proxy_engine.hpp"
+#include "llm_engine/gguf_inspector_engine.hpp"
 #include "llm_engine/model.hpp"
+#ifdef LLM_ENGINE_HAVE_LLAMA_CPP
+#  include "llm_engine/llama_cpp_engine.hpp"
+#endif
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/dialogs.hpp"
@@ -446,11 +450,17 @@ int main() {
     s.seedMockData();
 #endif
 
-    // Backend selection — LLOB_BACKEND env var picks the implementation
-    // (mock | hf), LLOB_BACKEND_URL overrides the FastAPI base URL when
-    // backend=hf.  Defaults to the mock so a vanilla launch keeps showing
-    // the demo data (or sentinels in mock-OFF builds).  See
-    // docs/HFPROXY_PLAN.md and ENGINE_API.md §2.3.
+    // Backend selection — LLOB_BACKEND env var picks the implementation:
+    //   mock      — deterministic fake data (default)
+    //   hf        — HTTP proxy to FastAPI server.  LLOB_BACKEND_URL
+    //               overrides the base URL (default http://127.0.0.1:8000).
+    //   gguf      — fully-native read-only GGUF inspector.  LLOB_GGUF_PATH
+    //               points at a .gguf file; auto-loads on startup.
+    //   llama_cpp — embedded llama.cpp inference + cb_eval attention
+    //               capture.  LLOB_GGUF_PATH points at a .gguf file;
+    //               auto-loads on startup.  Build with
+    //               LLM_ENGINE_BUILD_LLAMA_CPP=ON.
+    // See docs/HFPROXY_PLAN.md and ENGINE_API.md §2.3.
     std::unique_ptr<llob::Model> backend;
     {
         const char* sel    = std::getenv("LLOB_BACKEND");
@@ -460,6 +470,38 @@ int main() {
             std::string base    = url_env ? url_env : "http://127.0.0.1:8000";
             LLOB_LOG_INFO("init", "backend=hf base=%s", base.c_str());
             backend = std::make_unique<llob::HFProxyEngine>(std::move(base));
+        } else if (choice == "gguf") {
+            LLOB_LOG_INFO("init", "backend=gguf");
+            auto eng = std::make_unique<llmengine::GgufInspectorEngine>();
+            const char* path = std::getenv("LLOB_GGUF_PATH");
+            if (path && *path) {
+                auto r = eng->loadCheckpoint(path);
+                if (!r.ok) {
+                    LLOB_LOG_ERROR("init", "gguf load failed: %s", r.error.c_str());
+                } else {
+                    LLOB_LOG_INFO("init", "gguf loaded: %s", path);
+                }
+            } else {
+                LLOB_LOG_WARN("init", "LLOB_GGUF_PATH not set — use File ▸ Open");
+            }
+            backend = std::move(eng);
+#ifdef LLM_ENGINE_HAVE_LLAMA_CPP
+        } else if (choice == "llama_cpp") {
+            LLOB_LOG_INFO("init", "backend=llama_cpp");
+            auto eng = std::make_unique<llmengine::LlamaCppEngine>();
+            const char* path = std::getenv("LLOB_GGUF_PATH");
+            if (path && *path) {
+                auto r = eng->loadCheckpoint(path);
+                if (!r.ok) {
+                    LLOB_LOG_ERROR("init", "llama_cpp load failed: %s", r.error.c_str());
+                } else {
+                    LLOB_LOG_INFO("init", "llama_cpp loaded: %s", path);
+                }
+            } else {
+                LLOB_LOG_WARN("init", "LLOB_GGUF_PATH not set — use File ▸ Open");
+            }
+            backend = std::move(eng);
+#endif
         } else {
             if (choice != "mock") {
                 LLOB_LOG_WARN("init",
