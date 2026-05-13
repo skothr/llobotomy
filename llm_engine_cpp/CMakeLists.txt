@@ -57,6 +57,9 @@ add_library(llm_engine STATIC
   src/tensor_handle.cpp
   src/derived_cache.cpp
   src/model_view.cpp
+  src/gguf_parser.cpp
+  src/gguf_source.cpp
+  src/gguf_inspector_engine.cpp
 )
 add_library(llmengine::llm_engine ALIAS llm_engine)
 

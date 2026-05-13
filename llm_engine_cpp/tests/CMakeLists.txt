@@ -23,3 +23,28 @@ add_test(NAME model_view COMMAND test_model_view)
 add_executable(test_mock_model_compat test_mock_model_compat.cpp)
 target_link_libraries(test_mock_model_compat PRIVATE llmengine::llm_engine)
 add_test(NAME mock_model_compat COMMAND test_mock_model_compat)
+
+# GGUF parser — hand-constructed binary buffers, no real model file required.
+add_executable(test_gguf_parser test_gguf_parser.cpp)
+target_link_libraries(test_gguf_parser PRIVATE llmengine::llm_engine)
+add_test(NAME gguf_parser COMMAND test_gguf_parser)
+
+# GgufInspectorEngine — end-to-end: build GGUF → load → read_slice.
+add_executable(test_gguf_inspector_engine test_gguf_inspector_engine.cpp)
+target_link_libraries(test_gguf_inspector_engine PRIVATE llmengine::llm_engine)
+add_test(NAME gguf_inspector_engine COMMAND test_gguf_inspector_engine)
+
+# HFProxyEngine Phase 2 — smoke: construct with dead URL, assert all getters
+# return safe sentinels and don't crash.  Integration tier (setActivePrompt
+# round-trip against a live FastAPI + TinyLlama) requires
+# -DLLOB_INTEGRATION_TEST_ENABLED and LLOB_INTEGRATION_TEST=1 at runtime.
+add_executable(test_hf_proxy_capture test_hf_proxy_capture.cpp)
+target_link_libraries(test_hf_proxy_capture PRIVATE llmengine::llm_engine)
+add_test(NAME hf_proxy_capture COMMAND test_hf_proxy_capture)
+
+# Integration build variant: same source, compiled with the integration flag.
+add_executable(test_hf_proxy_capture_integration test_hf_proxy_capture.cpp)
+target_compile_definitions(test_hf_proxy_capture_integration PRIVATE
+    LLOB_INTEGRATION_TEST_ENABLED=1)
+target_link_libraries(test_hf_proxy_capture_integration PRIVATE llmengine::llm_engine)
+# Not added to ctest by default — only run manually when a live backend is up.

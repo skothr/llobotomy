@@ -29,7 +29,7 @@ unset) picks `MockModel`, preserving the existing dev workflow.
 | Phase | Hooks | Status |
 |---|---|---|
 | 1 | `loadCheckpoint`, `unloadCheckpoint`, `drainEngineLogs` | shipped |
-| 2 | `getModelInfo` (cache `/api/sessions/{n}/info`), `getCurrentTokens`, `getAttentionPattern`, `getQKVStats`, `getResidualSummary`, `getLogitLensTrajectory` | next |
+| 2 | `setActivePrompt` → `/capture`, `getCurrentTokens`, `getAttentionPattern`, `getResidualSummary`, `getQKVStats` | shipped |
 | 3 | `setAblation` (→ `surgery` POST + commit), `setSteering`/`clearSteering` | TBD |
 | 4 | WebSocket streams (`/ws/.../generate` for live token stream + `getOutputLogits`) | TBD |
 | 5 | Backend additions: state-dict enumeration, weight stats, tensor pages | TBD |

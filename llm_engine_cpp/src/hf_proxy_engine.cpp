@@ -1,5 +1,7 @@
 #include "llm_engine/hf_proxy_engine.hpp"
 #include "llm_engine/model_view.hpp"
+#include "llm_engine/capture.hpp"
+#include "llm_engine/tensor_source.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -8,7 +10,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -46,6 +52,30 @@ std::int64_t now_ms() {
         system_clock::now().time_since_epoch()).count();
 }
 
+// JSON helpers — kept here (before Impl) so doCapture inside Impl can
+// call them.  The second anonymous namespace block below was their
+// original home; they've been hoisted so the definition precedes use.
+int json_int(const json& j, const char* key, int fallback = kNoInt) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<int>();
+}
+std::int64_t json_i64(const json& j, const char* key, std::int64_t fallback = kNoSize) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<std::int64_t>();
+}
+float json_float(const json& j, const char* key, float fallback = kNoFloat) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<float>();
+}
+std::string json_string(const json& j, const char* key) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return {};
+    return it->get<std::string>();
+}
+
 }  // namespace
 
 struct HFProxyEngine::Impl {
@@ -68,10 +98,15 @@ struct HFProxyEngine::Impl {
     bool                  backend_live = false;    // last heartbeat result
     std::int64_t          last_contact_ms = 0;     // 0 ⇒ never reached
 
-    // SamplerWorker thread — drives the heartbeat now, will drive per-frame
-    // sample fetches once the WS streaming flow lands (Phase 4).  Lifecycle
-    // tied to Impl: spawned in ctor, joined in dtor with stop_flag set so
-    // a long sleep returns immediately.
+    // ── Phase 2 capture state ────────────────────────────────────────────
+    // setActivePrompt stores the prompt here then wakes the worker.  The
+    // worker reads it (under mu), runs the HTTP fetch, and stores the
+    // resulting CaptureBundle into view.current via atomic swap.
+    std::string   pending_prompt;        // "" ⇒ nothing pending
+    std::string   active_hash;           // hash of the currently-loaded capture
+
+    // SamplerWorker thread — drives heartbeat (Phase 1) and capture
+    // jobs (Phase 2).  Lifecycle tied to Impl.
     std::atomic<bool>           stop_flag{false};
     std::condition_variable     wake_cv;
     std::thread                 worker;
@@ -109,8 +144,14 @@ struct HFProxyEngine::Impl {
     // (down→up or up→down), emit a single log line so the UI's status
     // toast reflects the change.  The actual response payload is ignored —
     // a 200 means the backend is up enough to talk.
+    //
+    // Phase 2: between heartbeat sleeps, drain pending_prompt.  The worker
+    // POSTs /capture, then builds a minimal CaptureBundle from the response
+    // (token strings + shape) and swaps it into view.current.  Subsequent
+    // UI getter calls lazily fill in attention / residual / qkv.
     void workerLoop() {
         while (!stop_flag.load()) {
+            // ── Heartbeat ────────────────────────────────────────────────
             const auto res = worker_client.Get("/api/sessions");
             const bool live = (res && res->status == 200);
             const std::int64_t t = now_ms();
@@ -129,39 +170,107 @@ struct HFProxyEngine::Impl {
                     live ? "backend reachable"
                          : "backend unreachable");
             }
+
+            // ── Capture job ──────────────────────────────────────────────
+            std::string prompt_to_capture;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                prompt_to_capture = pending_prompt;
+                pending_prompt.clear();
+            }
+            if (!prompt_to_capture.empty()) {
+                doCapture(prompt_to_capture);
+            }
+
             std::unique_lock<std::mutex> lk(mu);
             wake_cv.wait_for(lk, kHeartbeatInterval,
-                             [this] { return stop_flag.load(); });
+                             [this] { return stop_flag.load() || !pending_prompt.empty(); });
         }
+    }
+
+    // POST /api/sessions/{n}/capture → GET /api/sessions/{n}/capture/{h}/tokens
+    // Builds a CaptureBundle from the shape metadata + token list, then
+    // atomically installs it into view.current.
+    void doCapture(const std::string& prompt) {
+        const std::string capture_path =
+            std::string("/api/sessions/") + kSessionName + "/capture";
+        const json body = {{"prompt", prompt}};
+
+        auto cap_res = worker_client.Post(
+            capture_path.c_str(), body.dump(), "application/json");
+
+        if (!cap_res) {
+            log(Severity::Warn, "hf",
+                std::string("capture POST failed: ") +
+                httplib::to_string(cap_res.error()));
+            return;
+        }
+        if (cap_res->status >= 400) {
+            log(Severity::Warn, "hf",
+                "capture POST returned " + std::to_string(cap_res->status) +
+                ": " + cap_res->body);
+            return;
+        }
+
+        json j;
+        try { j = json::parse(cap_res->body); }
+        catch (const std::exception& e) {
+            log(Severity::Warn, "hf",
+                std::string("capture POST parse failed: ") + e.what());
+            return;
+        }
+
+        const std::string hash = json_string(j, "prompt_hash");
+        const int layers   = json_int(j, "layers");
+        const int heads    = json_int(j, "heads");
+        const int seq_len  = json_int(j, "seq_len");
+        if (hash.empty() || layers <= 0 || heads <= 0 || seq_len <= 0) {
+            log(Severity::Warn, "hf", "capture POST: unexpected shape " + cap_res->body);
+            return;
+        }
+
+        // Fetch token strings.
+        const std::string tokens_path =
+            std::string("/api/sessions/") + kSessionName +
+            "/capture/" + hash + "/tokens";
+        auto tok_res = worker_client.Get(tokens_path.c_str());
+
+        std::vector<std::string> token_strs;
+        if (tok_res && tok_res->status == 200) {
+            try {
+                json tj = json::parse(tok_res->body);
+                for (const auto& s : tj.at("tokens")) {
+                    token_strs.push_back(s.get<std::string>());
+                }
+            } catch (...) {
+                log(Severity::Warn, "hf", "capture /tokens parse failed");
+            }
+        }
+
+        // Build a minimal CaptureBundle.  Attention / residual / qkv
+        // handles are filled lazily by the getter methods on UI calls.
+        auto bundle = std::make_shared<CaptureBundle>();
+        bundle->prompt_hash = hash;
+        bundle->token_strs  = std::move(token_strs);
+
+        // Install into view.current (lock-free for the UI, mutex for us
+        // because we also update active_hash).
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            active_hash = hash;
+            view.captures[hash] = bundle;
+        }
+        view.current.store(bundle);
+
+        log(Severity::Info, "hf",
+            "capture ready: hash=" + hash +
+            " layers=" + std::to_string(layers) +
+            " heads=" + std::to_string(heads) +
+            " seq=" + std::to_string(seq_len));
     }
 };
 
 namespace {
-
-// Pull an int / float / string out of a JSON object, returning the engine
-// sentinel when the key is missing or null.  The backend uses null for
-// many optional fields (e.g. rope_theta on models without rotary embeddings)
-// — we want those to render as "—" not 0.
-int json_int(const json& j, const char* key, int fallback = kNoInt) {
-    auto it = j.find(key);
-    if (it == j.end() || it->is_null()) return fallback;
-    return it->get<int>();
-}
-std::int64_t json_i64(const json& j, const char* key, std::int64_t fallback = kNoSize) {
-    auto it = j.find(key);
-    if (it == j.end() || it->is_null()) return fallback;
-    return it->get<std::int64_t>();
-}
-float json_float(const json& j, const char* key, float fallback = kNoFloat) {
-    auto it = j.find(key);
-    if (it == j.end() || it->is_null()) return fallback;
-    return it->get<float>();
-}
-std::string json_string(const json& j, const char* key) {
-    auto it = j.find(key);
-    if (it == j.end() || it->is_null()) return {};
-    return it->get<std::string>();
-}
 
 // Translate a SessionInfoResponse JSON into engine-side ModelInfo.  Field
 // names are normalised: num_layers → nLayers, hidden_size → dModel, etc.
@@ -259,18 +368,18 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                     .content_hash = "",
                     .source_label = "HuggingFace via FastAPI (" + m_impl->base_url + ")",
                 };
-                // Capability mirror for the path API.  Phase 1: only
-                // topology + log fan-in are wired; subsequent phases
-                // flip more bits as endpoints are wired.
+                // Capability mirror for the path API.  Phase 2: topology,
+                // tokenizer (via /capture + /tokens), attention matrices,
+                // residual summaries, QKV stats, and captures are wired.
                 m_impl->view.capabilities = Capabilities{
                     .has_topology      = true,
-                    .has_tokenizer     = false,
+                    .has_tokenizer     = true,   // token strings from /capture/tokens
                     .has_state_dict    = false,
-                    .has_attention     = false,
-                    .has_residual      = false,
+                    .has_attention     = true,
+                    .has_residual      = true,
                     .has_logit_lens    = false,
                     .has_token_stream  = false,
-                    .has_captures      = false,
+                    .has_captures      = true,
                     .has_intervention  = false,
                     .has_weight_deltas = false,
                     .has_training      = false,
@@ -371,6 +480,205 @@ EngineMetrics HFProxyEngine::getEngineMetrics() {
         m.dtype = "—";
     }
     return m;
+}
+
+// ── Phase 2 — capture-driven accessors ────────────────────────────────────
+
+void HFProxyEngine::setActivePrompt(std::string_view prompt) {
+    // Copy (caller's borrow ends after this call) then wake the worker.
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    m_impl->pending_prompt = std::string(prompt);
+    m_impl->wake_cv.notify_all();
+}
+
+std::vector<std::string> HFProxyEngine::getCurrentTokens() {
+    auto bundle = m_impl->view.current.load();
+    if (!bundle) return {};
+    return bundle->token_strs;
+}
+
+std::vector<std::vector<float>> HFProxyEngine::getAttentionPattern(
+    int layer, int head, [[maybe_unused]] int seqLen,
+    [[maybe_unused]] HeadBias bias)
+{
+    auto bundle = m_impl->view.current.load();
+    if (!bundle) return {};
+
+    const auto key = std::make_pair(layer, head);
+
+    // Cache-hit: handle already in the bundle.
+    {
+        // CaptureBundle's maps are written only from the worker thread or from
+        // this UI-thread getter (first call).  We use a per-Impl mutex to guard
+        // concurrent getters on the same bundle.
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        auto it = bundle->attention.find(key);
+        if (it != bundle->attention.end() && it->second.readable()) {
+            // Read from the cached handle.
+            const auto& h = it->second;
+            std::size_t rows = static_cast<std::size_t>(h.shape[0]);
+            std::size_t cols = static_cast<std::size_t>(h.shape[1]);
+            return h.read_slice_2d(0, rows, 0, cols);
+        }
+    }
+
+    // Cache miss: fetch from backend synchronously (first call per cell).
+    std::string hash;
+    { std::lock_guard<std::mutex> lk(m_impl->mu); hash = m_impl->active_hash; }
+    if (hash.empty()) return {};
+
+    const std::string path =
+        std::string("/api/sessions/") + kSessionName +
+        "/capture/" + hash +
+        "/attention?layer=" + std::to_string(layer) +
+        "&head=" + std::to_string(head);
+
+    auto res = m_impl->client.Get(path.c_str());
+    if (!res || res->status != 200) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getAttentionPattern: fetch failed layer=" + std::to_string(layer) +
+                    " head=" + std::to_string(head));
+        return {};
+    }
+
+    std::vector<std::vector<float>> matrix;
+    try {
+        const json j = json::parse(res->body);
+        for (const auto& row : j.at("matrix")) {
+            std::vector<float> r;
+            r.reserve(row.size());
+            for (const auto& v : row) r.push_back(v.get<float>());
+            matrix.push_back(std::move(r));
+        }
+    } catch (const std::exception& e) {
+        m_impl->log(Severity::Warn, "hf",
+                    std::string("getAttentionPattern parse failed: ") + e.what());
+        return {};
+    }
+
+    if (matrix.empty()) return {};
+
+    // Cache into the bundle so the next call is free.
+    const std::int64_t rows = static_cast<std::int64_t>(matrix.size());
+    const std::int64_t cols = static_cast<std::int64_t>(matrix[0].size());
+    std::vector<float> flat;
+    flat.reserve(static_cast<std::size_t>(rows * cols));
+    for (const auto& row : matrix)
+        for (float v : row)
+            flat.push_back(v);
+
+    auto src = InMemoryTensorSource::from_floats(std::move(flat));
+    TensorHandle h;
+    h.source      = src;
+    h.name        = "attn." + std::to_string(layer) + "." + std::to_string(head);
+    h.dtype       = DType::F32;
+    h.shape       = {rows, cols};
+    h.byte_offset = 0;
+    h.byte_length = src->size_bytes();
+    h.contiguous  = true;
+
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        // Cast away const — we own the bundle exclusively via the captures map.
+        const_cast<CaptureBundle*>(bundle.get())->attention[key] = std::move(h);
+    }
+
+    return matrix;
+}
+
+ResidualSummary HFProxyEngine::getResidualSummary(int layer) {
+    auto bundle = m_impl->view.current.load();
+    if (!bundle) return {};
+
+    // Check if we have a pre-computed summary.
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        auto it = bundle->residual_summary.find(layer);
+        if (it != bundle->residual_summary.end() && it->second) {
+            return *it->second;
+        }
+    }
+
+    std::string hash;
+    { std::lock_guard<std::mutex> lk(m_impl->mu); hash = m_impl->active_hash; }
+    if (hash.empty()) return {};
+
+    const std::string path =
+        std::string("/api/sessions/") + kSessionName +
+        "/capture/" + hash +
+        "/residual?layer=" + std::to_string(layer);
+
+    auto res = m_impl->client.Get(path.c_str());
+    if (!res || res->status != 200) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getResidualSummary: fetch failed layer=" + std::to_string(layer));
+        return {};
+    }
+
+    ResidualSummary s;
+    try {
+        const json j = json::parse(res->body);
+        s.attn_out_norm = json_float(j, "attn_out_norm");
+        s.mlp_out_norm  = json_float(j, "mlp_out_norm");
+        s.resid_norm    = json_float(j, "resid_norm");
+        s.cos_prev      = json_float(j, "cos_prev");
+        s.kurtosis      = json_float(j, "kurtosis");
+        s.rank_eff      = json_int  (j, "rank_eff");
+        s.rank_full     = json_int  (j, "rank_full");
+    } catch (const std::exception& e) {
+        m_impl->log(Severity::Warn, "hf",
+                    std::string("getResidualSummary parse failed: ") + e.what());
+        return {};
+    }
+
+    // Cache.
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        const_cast<CaptureBundle*>(bundle.get())->residual_summary[layer] =
+            std::make_shared<ResidualSummary>(s);
+    }
+    return s;
+}
+
+QKVStats HFProxyEngine::getQKVStats(int layer, int head, int token) {
+    auto bundle = m_impl->view.current.load();
+    if (!bundle) return {};
+
+    std::string hash;
+    { std::lock_guard<std::mutex> lk(m_impl->mu); hash = m_impl->active_hash; }
+    if (hash.empty()) return {};
+
+    const std::string path =
+        std::string("/api/sessions/") + kSessionName +
+        "/capture/" + hash +
+        "/qkv?layer=" + std::to_string(layer) +
+        "&head=" + std::to_string(head) +
+        "&token=" + std::to_string(token);
+
+    auto res = m_impl->client.Get(path.c_str());
+    if (!res || res->status != 200) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getQKVStats: fetch failed L=" + std::to_string(layer) +
+                    " H=" + std::to_string(head) +
+                    " T=" + std::to_string(token));
+        return {};
+    }
+
+    QKVStats q;
+    try {
+        const json j  = json::parse(res->body);
+        q.q_norm       = json_float(j, "q_norm");
+        q.k_norm       = json_float(j, "k_norm");
+        q.v_norm       = json_float(j, "v_norm");
+        q.attn_to_bos  = json_float(j, "attn_to_bos");
+        q.attn_to_self = json_float(j, "attn_to_self");
+        q.attn_to_prev = json_float(j, "attn_to_prev");
+    } catch (const std::exception& e) {
+        m_impl->log(Severity::Warn, "hf",
+                    std::string("getQKVStats parse failed: ") + e.what());
+        return {};
+    }
+    return q;
 }
 
 }  // namespace llmengine

@@ -3,10 +3,17 @@
 // HFProxyEngine — Model implementation that talks to the FastAPI backend at
 // testing/gui/backend/.  See docs/HFPROXY_PLAN.md for the endpoint mapping.
 //
-// Phase 1 scope (this file):
+// Phase 1:
 //   - loadCheckpoint(model_id)   → POST   /api/sessions {name, model_id, mode}
 //   - unloadCheckpoint()         → DELETE /api/sessions/{name}
 //   - drainEngineLogs()          → flush queued log lines (HTTP errors etc.)
+//
+// Phase 2 (this file):
+//   - setActivePrompt(prompt)    → POST /api/sessions/{n}/capture (worker thread)
+//   - getCurrentTokens()         → view().current token_strs
+//   - getAttentionPattern(L,H)   → GET  /api/sessions/{n}/capture/{h}/attention
+//   - getResidualSummary(L)      → GET  /api/sessions/{n}/capture/{h}/residual
+//   - getQKVStats(L,H,T)         → GET  /api/sessions/{n}/capture/{h}/qkv
 //
 // Every other Model::* method falls through to MockModel's default — which
 // returns the no-data sentinel for the type when LLOB_USE_MOCK_DATA=OFF
@@ -15,10 +22,11 @@
 // the wiring: load a real model and confirm topology populates while
 // per-frame samplers continue to show familiar mock data.
 //
-// Threading: every method here runs on the UI thread.  loadCheckpoint may
-// block for the duration of the backend's model load (10s of seconds for
-// a multi-billion-parameter model) — Phase 2 introduces a worker thread
-// + async load contract per ENGINE_API.md §2.2.
+// Threading: setActivePrompt pushes a capture job to the SamplerWorker
+// thread (already present for heartbeat).  Getters run on the UI thread
+// and may issue a single synchronous HTTP fetch (~10ms) for the first
+// request of each (layer, head) cell; subsequent calls hit the cache inside
+// the CaptureBundle.
 //
 // Backend selection: see main.cpp's MakeBackend() factory.  LLOB_BACKEND
 // picks the implementation; LLOB_BACKEND_URL overrides the FastAPI base
@@ -42,7 +50,7 @@ public:
     HFProxyEngine(const HFProxyEngine&)            = delete;
     HFProxyEngine& operator=(const HFProxyEngine&) = delete;
 
-    // ── Wired hooks ───────────────────────────────────────────────────────
+    // ── Phase 1 hooks ─────────────────────────────────────────────────────
     CheckpointResult       loadCheckpoint  (std::string_view path) override;
     void                   unloadCheckpoint()                      override;
     std::vector<LogEntry>  drainEngineLogs ()                      override;
@@ -50,6 +58,17 @@ public:
     EngineMetrics          getEngineMetrics()                      override;
     const ModelView&       view            () const                override;
     Capabilities           getCapabilities () const                override;
+
+    // ── Phase 2 hooks — real capture data ─────────────────────────────────
+    void setActivePrompt(std::string_view prompt)                             override;
+
+    std::vector<std::string>        getCurrentTokens ()                       override;
+    std::vector<std::vector<float>> getAttentionPattern(int layer, int head,
+                                                         int seqLen,
+                                                         HeadBias bias)       override;
+    ResidualSummary                 getResidualSummary (int layer)            override;
+    QKVStats                        getQKVStats        (int layer, int head,
+                                                        int token)            override;
 
 private:
     struct Impl;
