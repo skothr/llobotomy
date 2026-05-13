@@ -327,17 +327,20 @@ const ModelView& HFProxyEngine::view() const {
 
 Model::Capabilities HFProxyEngine::getCapabilities() const {
     // Phase 1: we own the topology + log fan-in only.  Subsequent phases
-    // light up attention / residual / token stream / intervention as
-    // their FastAPI endpoints get wired through.
+    // light up attention / residual / captures / intervention as their
+    // FastAPI endpoints get wired through.
     return Capabilities{
-        .has_topology     = true,
-        .has_state_dict   = false,
-        .has_attention    = false,
-        .has_residual     = false,
-        .has_logit_lens   = false,
-        .has_token_stream = false,
-        .has_intervention = false,
-        .has_training     = false,
+        .has_topology      = true,
+        .has_tokenizer     = false,   // Phase 2 wires /tokenize → TokenizerView.encode/decode
+        .has_state_dict    = false,
+        .has_attention     = false,   // Phase 2
+        .has_residual      = false,   // Phase 2
+        .has_logit_lens    = false,   // Phase 4 (WS stream)
+        .has_token_stream  = false,   // Phase 4
+        .has_captures      = false,   // Phase 2 — capture endpoint not wired yet
+        .has_intervention  = false,   // Phase 3
+        .has_weight_deltas = false,
+        .has_training      = false,   // out of scope for HF backend
     };
 }
 

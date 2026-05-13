@@ -499,8 +499,49 @@ struct Model {
         bool        ok    = true;
         std::string error;
     };
+
+    // Backend-tunable knobs honoured during loadCheckpoint.  Common keys
+    // are first-class fields; backend-specific options ride in `extras`
+    // (e.g. llama.cpp's `n_ctx`, libtorch's `device`, GGUF's `align`).
+    //
+    // Backends that don't recognise a field MUST silently ignore it —
+    // the same options struct may be used across mock / hf / gguf /
+    // llama / libtorch flows.  This is forward-compat by design:
+    // unknown future fields cause no errors today.
+    struct LoadOptions {
+        std::string mode;          // quant hint: "nf4" | "q4_0" | "fp16" | "" (default)
+        bool        mmap        = true;
+        bool        verify_hash = false;
+        std::vector<std::pair<std::string, std::string>> extras;  // backend-specific kvs
+    };
+
+    // Path-only form — the historical surface; kept as the primary
+    // virtual so existing backends compile unchanged.
     virtual CheckpointResult loadCheckpoint([[maybe_unused]] std::string_view path) { return {}; }
+
+    // Options form — preferred for new backends.  Default impl ignores
+    // options and delegates to the path-only form, so a backend that
+    // doesn't care about options gets correct behaviour for free.
+    virtual CheckpointResult loadCheckpoint(std::string_view path,
+                                            [[maybe_unused]] const LoadOptions& opts) {
+        return loadCheckpoint(path);
+    }
     virtual void             unloadCheckpoint() {}
+
+    // Long-running mutator progress.  Returns an empty Progress when no
+    // work is in flight; otherwise `kind` names the operation
+    // ("load" / "train" / "export") and `step / total` gives the
+    // fraction (total == 0 ⇒ indeterminate progress, UI shows spinner).
+    // Backends increment this from their engine thread; UI reads at
+    // frame rate.  Implementations must make the read cheap and
+    // lock-free if possible (a struct of POD scalars in a mutex-guarded
+    // member is fine — the lock is a few nanoseconds).
+    struct Progress {
+        std::string kind;          // "" ⇒ idle
+        int         step  = 0;
+        int         total = 0;
+    };
+    virtual Progress getProgress() const { return {}; }
 
     // ── Unified data structure (ModelView) ───────────────────────────────
     // The canonical accessor. Backends own a ModelView and return it here.
@@ -516,15 +557,22 @@ struct Model {
     // Each field is conservative-default-false so a new backend that
     // forgets to set them simply gets blank panels (preferred to crashing
     // on a wrong-shaped response).
+    //
+    // ABI policy: fields are append-only.  Re-ordering or removing a
+    // field is a major-version break; adding one is forward-compatible
+    // because downstream code reads named members, not packed bits.
     struct Capabilities {
-        bool has_topology     = false;
-        bool has_state_dict   = false;
-        bool has_attention    = false;     // capture-side: live attention matrices
-        bool has_residual     = false;
-        bool has_logit_lens   = false;
-        bool has_token_stream = false;     // live generation
-        bool has_intervention = false;     // setAblation / setSteering honoured
-        bool has_training     = false;
+        bool has_topology       = false;
+        bool has_tokenizer      = false;   // encode/decode wired
+        bool has_state_dict     = false;   // tensor enumeration
+        bool has_attention      = false;   // live attention matrices
+        bool has_residual       = false;   // live residual stream
+        bool has_logit_lens     = false;   // per-layer unembed projection
+        bool has_token_stream   = false;   // live generation
+        bool has_captures       = false;   // can run a forward pass at all
+        bool has_intervention   = false;   // setAblation / setSteering honoured
+        bool has_weight_deltas  = false;   // surgery/weight_deltas writeable
+        bool has_training       = false;
     };
     virtual Capabilities getCapabilities() const { return {}; }
 
@@ -534,9 +582,14 @@ struct Model {
     //   setActivePrompt — UI invokes when the inference workspace's
     //                     prompt commits.  Engine kicks off the capture
     //                     that populates ModelView::current.
+    //                     OWNERSHIP: `prompt` is a borrow; the backend
+    //                     MUST copy if it retains the value beyond this
+    //                     call (e.g. for an async forward pass).
     //   setAblation     — full set of ablated heads + components.  Called
     //                     debounced (~200ms) when the UI's ablation set
-    //                     changes; engine masks accordingly.
+    //                     changes; engine masks accordingly.  Heads /
+    //                     components are passed by value (the engine
+    //                     copies internally).
     //   setSteering /
     //   clearSteering   — install / remove a steering vector.
     virtual void setActivePrompt([[maybe_unused]] std::string_view prompt) {}

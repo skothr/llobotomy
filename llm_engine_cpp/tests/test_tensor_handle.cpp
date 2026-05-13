@@ -238,6 +238,74 @@ void test_tri_state() {
     assert(first == again);
 }
 
+void test_integer_dequant_round_trip() {
+    // I8 / I16 / I32 / U8 all cast to f32 — verify a small known vector
+    // round-trips through each integer dtype.
+    auto check_i = [](DType dt, std::size_t bpe) {
+        // Use values -3..+4 to exercise sign extension on signed types.
+        std::vector<int> ints{-3, -2, -1, 0, 1, 2, 3, 4};
+        std::vector<std::byte> raw(ints.size() * bpe);
+        // Pack into the right byte size.  We assume little-endian host
+        // (build target matches; cross-host is GGUF-spec territory and
+        // belongs in a separate test).
+        for (std::size_t i = 0; i < ints.size(); ++i) {
+            const std::int64_t v = ints[i];
+            for (std::size_t b = 0; b < bpe; ++b) {
+                raw[i * bpe + b] = static_cast<std::byte>((v >> (8 * b)) & 0xFF);
+            }
+        }
+        auto src = std::make_shared<InMemoryTensorSource>(std::move(raw));
+        TensorHandle h;
+        h.source      = src;
+        h.name        = "test/int";
+        h.dtype       = dt;
+        h.shape       = {static_cast<std::int64_t>(ints.size())};
+        h.byte_offset = 0;
+        h.byte_length = ints.size() * bpe;
+        auto out = h.read_slice(0, ints.size());
+        assert(out.size() == ints.size());
+        for (std::size_t i = 0; i < ints.size(); ++i) {
+            assert(out[i] == static_cast<float>(ints[i]));
+        }
+    };
+    check_i(DType::I8,  1);
+    check_i(DType::I16, 2);
+    check_i(DType::I32, 4);
+
+    // U8: same harness but unsigned.
+    std::vector<std::uint8_t> us{0, 1, 127, 128, 255};
+    std::vector<std::byte> raw(us.size());
+    for (std::size_t i = 0; i < us.size(); ++i) raw[i] = static_cast<std::byte>(us[i]);
+    auto src = std::make_shared<InMemoryTensorSource>(std::move(raw));
+    TensorHandle h;
+    h.source      = src;
+    h.name        = "test/u8";
+    h.dtype       = DType::U8;
+    h.shape       = {static_cast<std::int64_t>(us.size())};
+    h.byte_offset = 0;
+    h.byte_length = us.size();
+    auto out = h.read_slice(0, us.size());
+    assert(out.size() == us.size());
+    for (std::size_t i = 0; i < us.size(); ++i) assert(out[i] == static_cast<float>(us[i]));
+}
+
+void test_registry_at_throws() {
+    TensorRegistry reg;
+    TensorHandle h;
+    h.name = "alpha";
+    reg.insert(h);
+
+    // Hit succeeds.
+    const auto& hit = reg.at("alpha");
+    assert(hit.name == "alpha");
+
+    // Miss throws std::out_of_range.
+    bool threw = false;
+    try { (void)reg.at("missing"); }
+    catch (const std::out_of_range&) { threw = true; }
+    assert(threw);
+}
+
 void test_unsupported_dtype_returns_empty() {
     // Q4_0 has no dequantiser in this build — read_slice should return {}
     // rather than throwing or asserting.
@@ -266,6 +334,8 @@ int main() {
     test_registry();
     test_canonical_path_validation();
     test_tri_state();
+    test_integer_dequant_round_trip();
+    test_registry_at_throws();
     test_unsupported_dtype_returns_empty();
     return 0;
 }

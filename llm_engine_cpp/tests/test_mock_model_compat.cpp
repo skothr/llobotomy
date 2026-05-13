@@ -54,7 +54,30 @@ int main() {
     auto again = h->read_slice(0, 8);
     assert(first.size() == 8);
     assert(first == again);
+
+    // New capability bits must be set consistently — has_tokenizer false
+    // (MockModel doesn't expose encode/decode), has_captures true
+    // (per-DTO getters return mock activations).
+    assert(caps.has_captures);
+    assert(!caps.has_tokenizer);
+
+    // No long-running work in flight: getProgress() returns idle.
+    auto p = m.getProgress();
+    assert(p.kind.empty());
 #endif
+
+    // Lifecycle roundtrip: unloadCheckpoint clears the view via
+    // ModelView::clear().  Mock's defaults survive the cycle in mock-
+    // mode (the populator re-runs once we re-create a MockModel) — for
+    // this test we just verify that after unload, view().topology
+    // returns sentinels.  MockModel itself has no notion of "load a
+    // different checkpoint" so we exercise the substrate piece directly.
+    m.unloadCheckpoint();
+    // unloadCheckpoint on MockModel is a no-op (base Model default).
+    // What we want to test is ModelView::clear() — exercised separately
+    // in test_model_view.cpp.  Here we just confirm calling it doesn't
+    // crash even on a populated view.
+    (void)m.view();
 
     return 0;
 }

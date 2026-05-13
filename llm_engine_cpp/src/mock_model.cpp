@@ -130,14 +130,17 @@ const ModelView& MockModel::view() const {
 Model::Capabilities MockModel::getCapabilities() const {
 #if LLOB_USE_MOCK_DATA
     return Capabilities{
-        .has_topology     = true,
-        .has_state_dict   = true,
-        .has_attention    = true,
-        .has_residual     = true,
-        .has_logit_lens   = true,
-        .has_token_stream = false,
-        .has_intervention = false,
-        .has_training     = true,    // mock loss curves only
+        .has_topology      = true,
+        .has_tokenizer     = false,    // MockModel exposes vocab via getCurrentTokens, not encode/decode
+        .has_state_dict    = true,
+        .has_attention     = true,
+        .has_residual      = true,
+        .has_logit_lens    = true,
+        .has_token_stream  = false,
+        .has_captures      = true,     // every per-DTO getter returns mock activations
+        .has_intervention  = false,    // setAblation/setSteering are no-ops in mock
+        .has_weight_deltas = false,
+        .has_training      = true,     // mock loss curves only
     };
 #else
     return {};
