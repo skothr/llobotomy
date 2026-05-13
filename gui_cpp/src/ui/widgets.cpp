@@ -36,10 +36,11 @@ void ActivationHistogramF(std::span<const float> bins, float width, float height
     dl->AddRectFilled(p0, p1, Sty().bg_input);
     dl->AddRect      (p0, p1, Sty().border);
 
+    const float bw = bins.empty() ? 0.0f : width / float(bins.size());
+    float maxv = 0;
     if (!bins.empty()) {
-        float maxv = 0; for (float v : bins) maxv = std::max(maxv, v);
+        for (float v : bins) maxv = std::max(maxv, v);
         if (maxv == 0) maxv = 1;
-        const float bw = width / float(bins.size());
         for (std::size_t i = 0; i < bins.size(); ++i) {
             const float h = (bins[i] / maxv) * (height - 14);
             const ImVec2 b0 = { p0.x + i * bw,           p1.y - h - 2 };
@@ -55,7 +56,25 @@ void ActivationHistogramF(std::span<const float> bins, float width, float height
         dl->AddLine({x, p0.y + 2}, {x, p1.y - 2}, a.color, 1);
         if (a.label) dl->AddText({x + 3, p0.y + 1}, a.color, a.label);
     }
+
+    // Hit-test: report the hovered bin via tooltip + highlight.  The bin
+    // index assumes the histogram covers a symmetric ±1 range (the
+    // dashed line at width/2 is the implied zero); callers that care
+    // about a specific value range can compute their own and overlay a
+    // richer tooltip via IsItemHovered().
     ImGui::Dummy(ImVec2(width, height));
+    if (!bins.empty() && ImGui::IsItemHovered()) {
+        const float mx  = ImGui::GetMousePos().x;
+        const int   idx = std::clamp(int((mx - p0.x) / bw), 0, int(bins.size()) - 1);
+        const ImVec2 hb0 = { p0.x + idx * bw,           p0.y };
+        const ImVec2 hb1 = { p0.x + (idx + 1) * bw,     p1.y };
+        dl->AddRectFilled(hb0, hb1, WithAlpha(Sty().accent, 0.18f));
+        // Bin range over [-1, +1] normalised — true range is engine-side.
+        const float vmin = -1.0f + 2.0f * (float(idx)     / float(bins.size()));
+        const float vmax = -1.0f + 2.0f * (float(idx + 1) / float(bins.size()));
+        ImGui::SetTooltip("bin %d / %zu\nrange [% .3f, % .3f] (normalised)\ncount %.0f",
+                          idx, bins.size(), double(vmin), double(vmax), double(bins[idx]));
+    }
 }
 
 void ActivationHistogram(std::span<const int> bins, float width, float height,
@@ -97,7 +116,19 @@ void Sparkline(std::span<const float> data, const SparkOpts& o) {
     }
     dl->AddPolyline(pts.data(), int(pts.size()), color, ImDrawFlags_None, 1.0f);
 
+    // Hit-test: snap to the nearest sample and surface its value.
     ImGui::Dummy(ImVec2(o.width, o.height));
+    if (ImGui::IsItemHovered()) {
+        const float t   = std::clamp((ImGui::GetMousePos().x - p0.x) / o.width, 0.0f, 1.0f);
+        const int   idx = std::clamp(int(t * float(data.size() - 1) + 0.5f),
+                                     0, int(data.size()) - 1);
+        const ImVec2 pt = pts[idx];
+        // Vertical guide + filled dot at the snapped sample
+        dl->AddLine({pt.x, p0.y}, {pt.x, p1.y}, WithAlpha(Sty().accent, 0.45f), 1.0f);
+        dl->AddCircleFilled(pt, 3.0f, Sty().accent);
+        ImGui::SetTooltip("idx %d / %zu\nvalue %+.4f\nmin %+.4f  max %+.4f",
+                          idx, data.size(), double(data[idx]), double(lo), double(hi));
+    }
 }
 
 // ── TensorHeatmap ──────────────────────────────────────────────────────────
@@ -186,7 +217,27 @@ bool AttentionThumb(const std::vector<std::vector<float>>& data,
     }
 
     ImGui::InvisibleButton("##athumb", { panel_w, panel_h });
-    return ImGui::IsItemClicked();
+    const bool clicked = ImGui::IsItemClicked();
+
+    // Hit-test individual cells of the attention grid — surfaces the raw
+    // attention weight + (i, j) indices so the viewer can drill from
+    // pattern → exact (query, key) attention coefficient.
+    if (ImGui::IsItemHovered() && !data.empty()) {
+        const ImVec2 mp = ImGui::GetMousePos();
+        const int j = std::clamp(int((mp.x - g0.x) / c), 0, n - 1);
+        const int i = std::clamp(int((mp.y - g0.y) / c), 0, n - 1);
+        if (mp.x >= g0.x && mp.x < g0.x + size && mp.y >= g0.y && mp.y < g0.y + size) {
+            const ImVec2 r0 = { g0.x + j * c, g0.y + i * c };
+            const ImVec2 r1 = { r0.x + c,     r0.y + c };
+            dl->AddRect(r0, r1, Sty().accent, 0, 0, 1.5f);
+            const float v = (i < int(data.size()) && j < int(data[i].size()))
+                           ? data[i][j] : 0.0f;
+            const bool masked = (j > i);   // causal
+            ImGui::SetTooltip("query  i=%d (row)\nkey    j=%d (col)\nattn   %.4f%s",
+                              i, j, double(v), masked ? "  (masked)" : "");
+        }
+    }
+    return clicked;
 }
 
 // ── Full AttentionHeatmap with token labels ────────────────────────────────
