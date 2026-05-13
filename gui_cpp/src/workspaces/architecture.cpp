@@ -48,19 +48,27 @@ Cols ComputeCols(const ModelInfo& mi) {
     c.headCellW   = std::max(8.0f, std::min(22.0f, std::floor(280.0f / float(mi.nHeads))));
     c.headCellGap = 1.0f;
 
+    // Cell base widths sized to fit native-font labels at zoom 1.00x.
+    // Text is painted at native font size (does NOT scale with archZoom),
+    // so the cell rect must be wide enough at the unscaled baseline:
+    //   "rmsnorm_1"   ~ 80px → norm cells need ≥ 88
+    //   "W_in (gate)" ~ 70px → gateup needs ≥ 80
+    //   "W_O d->d"    ~ 50px → wo / qkv need ≥ 60
+    // Earlier values (cw(64) / cw(56) / cw(72)) overflowed at 1.00x and
+    // only normalised once the user zoomed past ~1.5x.
     const float dScale = std::max(1.0f, std::log2(float(mi.dModel) / 384.0f) * 0.18f + 1.0f);
     auto cw = [dScale](float base) { return std::round(base * dScale); };
     const float pad_l = 16.0f;
     c.label  = { pad_l,           64 };
-    c.norm1  = { pad_l + 76,      cw(64) };
-    c.qkv    = { 0,               cw(56) };
+    c.norm1  = { pad_l + 76,      cw(88) };
+    c.qkv    = { 0,               cw(64) };
     c.heads  = { 0,               c.nHeads * (c.headCellW + c.headCellGap) };
-    c.wo     = { 0,               cw(56) };
+    c.wo     = { 0,               cw(64) };
     c.add1   = { 0,               18 };
-    c.norm2  = { 0,               cw(64) };
-    c.gateup = { 0,               cw(72) };
-    c.silu   = { 0,               22 };
-    c.wout   = { 0,               cw(72) };
+    c.norm2  = { 0,               cw(88) };
+    c.gateup = { 0,               cw(88) };
+    c.silu   = { 0,               24 };
+    c.wout   = { 0,               cw(80) };
     c.add2   = { 0,               18 };
 
     float x = c.norm1.x + c.norm1.w + 14;
