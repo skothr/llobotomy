@@ -23,4 +23,11 @@ void HeadTooltip(Model& m, int layer, int head);
 // Block label: layer summary (resid/attn/mlp norms + dead-neuron count).
 void LayerTooltip(Model& m, int layer);
 
+// Render any persistent panels pinned via middle-click on a tooltip-
+// eligible item.  Each panel reuses the matching tooltip's body — same
+// data, same code — so a real-backend hook lights up both surfaces.
+// Submit once per frame near the end of the main loop (after panels;
+// before the status bar is fine).
+void DrawPinnedPanels(Model& m);
+
 }  // namespace llob

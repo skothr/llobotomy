@@ -16,6 +16,7 @@
 #include "ui/file_dialogs.hpp"
 #include "ui/settings.hpp"
 #include "ui/sidecar.hpp"
+#include "ui/tooltips.hpp"
 #include "workspaces/workspaces.hpp"
 
 #include <imgui.h>
@@ -557,6 +558,11 @@ int main() {
         // Panels live at top level — they auto-route into the workspace's
         // dockspace via the prior DockBuilderDockWindow assignment.
         DispatchWorkspacePanels(s, model);
+
+        // Pinned tooltip panels — middle-click any tooltip-eligible item
+        // to spawn a persistent panel; survive workspace switches and
+        // reuse the same render bodies as the transient tooltip.
+        llob::DrawPinnedPanels(model);
 
         DrawStatusBar(s);
 
