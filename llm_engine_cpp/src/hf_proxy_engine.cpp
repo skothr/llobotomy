@@ -3,10 +3,13 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -28,6 +31,14 @@ constexpr const char* kSessionName = "llobotomy";
 // MakeBackend factory site if needed (Phase 2).
 constexpr const char* kDefaultLoadMode = "nf4";
 
+// SamplerWorker cadence.  The worker thread sleeps `kHeartbeatInterval`
+// between liveness pings to /api/sessions; on a successful response the
+// engine's "live" flag stays true, on failure it goes false and the UI
+// renders the device tag with a "(down)" suffix.  10s is a balance —
+// fast enough that user reconnects feel responsive, slow enough not to
+// spam the backend.
+constexpr auto kHeartbeatInterval = std::chrono::seconds(10);
+
 std::int64_t now_ms() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(
@@ -38,24 +49,84 @@ std::int64_t now_ms() {
 
 struct HFProxyEngine::Impl {
     std::string           base_url;
+    // Two HTTP clients so the worker's heartbeat doesn't serialize behind
+    // a slow loadCheckpoint POST on the UI thread.  cpp-httplib's
+    // httplib::Client is not internally thread-safe (each instance owns
+    // a single keep-alive connection); separate clients per logical
+    // caller is the recommended pattern.
     httplib::Client       client;
-    std::mutex            mu;                      // guards pending_logs + info
+    httplib::Client       worker_client;
+    std::mutex            mu;                      // guards everything below
     std::vector<LogEntry> pending_logs;
     ModelInfo             info;                    // populated post-loadCheckpoint
+    bool                  backend_live = false;    // last heartbeat result
+    std::int64_t          last_contact_ms = 0;     // 0 ⇒ never reached
+
+    // SamplerWorker thread — drives the heartbeat now, will drive per-frame
+    // sample fetches once the WS streaming flow lands (Phase 4).  Lifecycle
+    // tied to Impl: spawned in ctor, joined in dtor with stop_flag set so
+    // a long sleep returns immediately.
+    std::atomic<bool>           stop_flag{false};
+    std::condition_variable     wake_cv;
+    std::thread                 worker;
 
     explicit Impl(std::string url)
-        : base_url(std::move(url)), client(base_url) {
+        : base_url(std::move(url)),
+          client(base_url),
+          worker_client(base_url) {
         // Connect quickly so a missing backend surfaces a clear error
         // instead of an indefinite hang.  Read/write are generous because
         // the model-load endpoint can take 10s+ for large checkpoints.
         client.set_connection_timeout(5, 0);
         client.set_read_timeout(120, 0);
         client.set_write_timeout(120, 0);
+        // Worker uses tighter timeouts since heartbeat queries are quick.
+        worker_client.set_connection_timeout(2, 0);
+        worker_client.set_read_timeout(5, 0);
+        worker_client.set_write_timeout(5, 0);
+
+        worker = std::thread([this] { workerLoop(); });
+    }
+
+    ~Impl() {
+        stop_flag.store(true);
+        wake_cv.notify_all();
+        if (worker.joinable()) worker.join();
     }
 
     void log(Severity sev, const char* kind, std::string msg) {
         std::lock_guard<std::mutex> lk(mu);
         pending_logs.push_back({now_ms(), sev, kind, std::move(msg)});
+    }
+
+    // Heartbeat: GET /api/sessions every kHeartbeatInterval; on transition
+    // (down→up or up→down), emit a single log line so the UI's status
+    // toast reflects the change.  The actual response payload is ignored —
+    // a 200 means the backend is up enough to talk.
+    void workerLoop() {
+        while (!stop_flag.load()) {
+            const auto res = worker_client.Get("/api/sessions");
+            const bool live = (res && res->status == 200);
+            const std::int64_t t = now_ms();
+            bool changed = false;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (live != backend_live) {
+                    backend_live = live;
+                    changed = true;
+                }
+                if (live) last_contact_ms = t;
+            }
+            if (changed) {
+                log(live ? Severity::Info : Severity::Warn,
+                    "hf",
+                    live ? "backend reachable"
+                         : "backend unreachable");
+            }
+            std::unique_lock<std::mutex> lk(mu);
+            wake_cv.wait_for(lk, kHeartbeatInterval,
+                             [this] { return stop_flag.load(); });
+        }
     }
 };
 
@@ -228,6 +299,28 @@ std::vector<LogEntry> HFProxyEngine::drainEngineLogs() {
 ModelInfo HFProxyEngine::getModelInfo() {
     std::lock_guard<std::mutex> lk(m_impl->mu);
     return m_impl->info;
+}
+
+EngineMetrics HFProxyEngine::getEngineMetrics() {
+    EngineMetrics m;
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    if (m_impl->backend_live) {
+        if (m_impl->info.nLayers > 0) {
+            // Loaded checkpoint — render as "hf · <model_id>".
+            m.device = "hf · " + m_impl->info.name;
+        } else {
+            m.device = "hf · idle";
+        }
+        m.dtype  = "fp16";   // backend default; refine when load mode is parsed
+    } else {
+        const std::int64_t since = m_impl->last_contact_ms == 0
+            ? -1
+            : (now_ms() - m_impl->last_contact_ms);
+        if (since < 0) m.device = "hf · unreachable";
+        else           m.device = "hf · down " + std::to_string(since / 1000) + "s";
+        m.dtype = "—";
+    }
+    return m;
 }
 
 }  // namespace llmengine

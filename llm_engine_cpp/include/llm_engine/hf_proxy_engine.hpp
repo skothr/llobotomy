@@ -47,6 +47,7 @@ public:
     void                   unloadCheckpoint()                      override;
     std::vector<LogEntry>  drainEngineLogs ()                      override;
     ModelInfo              getModelInfo    ()                      override;
+    EngineMetrics          getEngineMetrics()                      override;
 
 private:
     struct Impl;
