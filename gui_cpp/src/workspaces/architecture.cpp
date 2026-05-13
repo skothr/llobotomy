@@ -14,6 +14,7 @@
 #include "ui/chrome.hpp"
 #include "ui/colormap.hpp"
 #include "ui/fmt.hpp"
+#include "ui/tooltips.hpp"
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
@@ -362,6 +363,7 @@ void DrawArchMap(AppState& s, Model& m) {
 
         ImGui::SetCursorScreenPos(P(cols.label.x + 4, y0 + 4));
         ImGui::InvisibleButton("label", { lbl_w * Z, (h - 8) * Z });
+        LayerTooltip(m, L);
         if (ImGui::IsItemClicked()) {
             if (ImGui::GetIO().KeyShift) s.toggleLayerSkip(L);
             else { s.toggleLayerExpand(L); s.setActiveLayer(L); }
@@ -402,6 +404,7 @@ void DrawArchMap(AppState& s, Model& m) {
                 ImGui::InvisibleButton("h", { mhw * Z, 14 * Z });
                 if (ImGui::IsItemClicked()) s.toggleProbe(L, hd);
                 if (WasRightClicked())      s.toggleAblate(hk);
+                HeadTooltip(m, L, hd);
                 ImGui::PopID();
             }
             const float mlp_x = mx0 + mhw * s.model.nHeads + 18;
@@ -443,6 +446,7 @@ void DrawArchMap(AppState& s, Model& m) {
                 ImGui::InvisibleButton("c", { w * Z, kCompH * Z });
                 if (ImGui::IsItemClicked()) s.toggleProbeComp(L, ref);
                 if (WasRightClicked())      s.toggleAblateComp(L, ref);
+                ComponentTooltip(m, L, ref);
                 ImGui::PopID();
             };
 
@@ -485,6 +489,7 @@ void DrawArchMap(AppState& s, Model& m) {
                 ImGui::InvisibleButton("hd", { cols.headCellW * Z, 34 * Z });
                 if (ImGui::IsItemClicked()) s.toggleProbe(L, hd);
                 if (WasRightClicked())      s.toggleAblate(hk);
+                HeadTooltip(m, L, hd);
                 ImGui::PopID();
             }
 
