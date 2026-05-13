@@ -23,7 +23,12 @@ namespace llob {
 
 namespace {
 
-constexpr ImGuiHoveredFlags kHoverFlags = ImGuiHoveredFlags_DelayNormal;
+// All tooltips open via ImGui::BeginItemTooltip(), which is the canonical
+// pattern (= IsItemHovered with the internal DelayNormal + tooltip-routing
+// flags + BeginTooltip).  Earlier IsItemHovered + BeginTooltip flashed a
+// yellow item-highlight border for one frame when the mouse moved between
+// two adjacent items — the destination item briefly entered the "hovered
+// but no tooltip yet" state before the new tooltip won the redirect.
 
 // Map a comp_ref like "W_Q" / "W_in_gate" / "norm1" to a canonical engine
 // tensor name `blocks.<L>.<area>.<comp>.weight`.  When a backend uses a
@@ -74,21 +79,43 @@ void Muted(const char* fmt, ...) {
 }  // namespace
 
 // ── Component tooltip ─────────────────────────────────────────────────────
+
+namespace {
+
+// W_Q → kind 0 (Q), W_K → kind 1 (K), W_V → kind 2 (V).  Anything else
+// returns -1 (no live activation hook applies).
+int LiveKindFor(std::string_view comp) {
+    if (comp == "W_Q") return 0;
+    if (comp == "W_K") return 1;
+    if (comp == "W_V") return 2;
+    return -1;
+}
+
+const char* LiveLabelFor(int kind) {
+    switch (kind) {
+        case 0: return "Q vector";
+        case 1: return "K vector";
+        case 2: return "V vector";
+    }
+    return "live";
+}
+
+}  // namespace
+
 void ComponentTooltip(Model& m, int layer, std::string_view comp_ref) {
-    if (!ImGui::IsItemHovered(kHoverFlags)) return;
+    if (!ImGui::BeginItemTooltip()) return;
 
     const std::string tname = TensorNameFor(layer, comp_ref);
-    const auto meta = m.getTensorMeta(tname);
+    const auto meta  = m.getTensorMeta(tname);
     const auto stats = m.getTensorStats(tname);
     const auto bins  = m.getWeightHistogram(tname, 32);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-    ImGui::BeginTooltip();
 
     Header("L%02d · %.*s", layer, int(comp_ref.size()), comp_ref.data());
     Muted("%s", tname.c_str());
 
+    // ── WEIGHTS — the matrix's own data ───────────────────────────────
     ImGui::Separator();
+    Muted("WEIGHTS");
     if (!meta.shape.empty()) {
         Muted("shape   %s", FmtShape(meta.shape).c_str());
         Muted("dtype   %s", meta.dtype.empty() ? "?" : meta.dtype.c_str());
@@ -98,22 +125,49 @@ void ComponentTooltip(Model& m, int layer, std::string_view comp_ref) {
     } else {
         Muted("// no tensor metadata yet");
     }
-
-    if (!std::isnan(stats.frobenius) || !std::isnan(stats.op_norm)) {
-        ImGui::Separator();
-        if (!std::isnan(stats.frobenius)) Muted("‖·‖_F   %.3f", double(stats.frobenius));
-        if (!std::isnan(stats.op_norm))   Muted("‖·‖_2   %.3f", double(stats.op_norm));
-        if (stats.rank_eff != kNoInt)     Muted("rank    %d", stats.rank_eff);
+    if (!std::isnan(stats.frobenius)) Muted("‖·‖_F   %.3f", double(stats.frobenius));
+    if (!std::isnan(stats.op_norm))   Muted("‖·‖_2   %.3f", double(stats.op_norm));
+    if (stats.rank_eff != kNoInt)     Muted("rank    %d", stats.rank_eff);
+    if (!bins.empty()) {
+        Muted("distribution");
+        ActivationHistogram(bins, 240.0f, 48.0f, Sty().info);
     }
 
-    if (!bins.empty()) {
+    // ── LIVE — what this matrix produces at the current token ────────
+    // Only meaningful for the QKV projection matrices (right now); other
+    // components (norms, MLP gates, output projections) render the
+    // section header with a "no live data" hint so the tooltip layout
+    // stays predictable.
+    const int kind = LiveKindFor(comp_ref);
+    if (kind >= 0) {
         ImGui::Separator();
-        Muted("weight distribution");
-        ActivationHistogram(bins, 240.0f, 56.0f, Sty().info);
+        Muted("LIVE  %s @ active token", LiveLabelFor(kind));
+        // [DATA HOOK] Model::getActivation(layer, kind, n) — pulls the
+        // d_head slice of the matrix's output for the current token.
+        // 64 is a defensive cap; real backend should respect d_head.
+        const auto vec = m.getActivation(layer, kind, 64);
+        if (vec.empty()) {
+            Muted("// no live activation data");
+        } else {
+            SparkOpts so{};
+            so.color  = Sty().accent;
+            so.fill   = true;
+            so.width  = 240.0f;
+            so.height = 36.0f;
+            Sparkline(vec, so);
+            // L2 norm + min/max under the spark for a single-glance read
+            float lo = vec[0], hi = vec[0], sumsq = 0.0f;
+            for (float v : vec) { lo = std::min(lo, v); hi = std::max(hi, v); sumsq += v * v; }
+            Muted("min %+.3f   max %+.3f   ‖·‖₂ %.3f",
+                  double(lo), double(hi), double(std::sqrt(sumsq)));
+        }
+    } else if (comp_ref == "W_O" || comp_ref == "W_out" || comp_ref == "W_in_gate" || comp_ref == "W_in_up") {
+        ImGui::Separator();
+        Muted("LIVE  output activation");
+        Muted("// engine hook not wired yet — needs Model::getActivation kind for this component");
     }
 
     ImGui::EndTooltip();
-    ImGui::PopStyleVar();
 }
 
 // ── Head tooltip ──────────────────────────────────────────────────────────
@@ -131,15 +185,12 @@ const char* BiasNameLong(HeadBias b) {
 }  // namespace
 
 void HeadTooltip(Model& m, int layer, int head) {
-    if (!ImGui::IsItemHovered(kHoverFlags)) return;
+    if (!ImGui::BeginItemTooltip()) return;
 
     const HeadBias bias = m.getHeadBias(layer, head);
     const float    norm = m.getHeadNorm(layer, head);
     const auto     pat  = m.getAttentionPattern(layer, head, 12, bias);
     const auto     hs   = m.getHeadStats(layer, head);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-    ImGui::BeginTooltip();
 
     Header("L%02d · h%d", layer, head);
     Muted("pattern  %s", BiasNameLong(bias));
@@ -169,18 +220,14 @@ void HeadTooltip(Model& m, int layer, int head) {
     }
 
     ImGui::EndTooltip();
-    ImGui::PopStyleVar();
 }
 
 // ── Layer tooltip ─────────────────────────────────────────────────────────
 void LayerTooltip(Model& m, int layer) {
-    if (!ImGui::IsItemHovered(kHoverFlags)) return;
+    if (!ImGui::BeginItemTooltip()) return;
 
     const auto live = m.getLiveActivations(layer);
     const auto rsum = m.getResidualSummary(layer);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-    ImGui::BeginTooltip();
 
     Header("block_%02d", layer);
 
@@ -205,7 +252,6 @@ void LayerTooltip(Model& m, int layer) {
     }
 
     ImGui::EndTooltip();
-    ImGui::PopStyleVar();
 }
 
 }  // namespace llob
