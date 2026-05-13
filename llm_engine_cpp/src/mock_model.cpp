@@ -38,21 +38,31 @@ namespace {
 // the existing MockModel::getStateDict() output (which the raw-tensors
 // workspace already renders) so the typed view stays consistent with the
 // per-DTO path.
+//
+// Each handle plugs into a Mulberry32Source seeded by a hash of the
+// tensor name — so the byte stream is deterministic AND distinct per
+// tensor, with no upfront memory cost (bytes are computed on each
+// pread()).  Architecturally identical to a real-backend handle: a
+// future GgufInspectorEngine plugs in a GgufSource the same way.
+std::uint32_t name_seed(std::string_view name) {
+    std::uint32_t h = 2166136261u;
+    for (char c : name) { h ^= static_cast<std::uint8_t>(c); h *= 16777619u; }
+    return h | 1u;     // never zero — keeps PRNG transitions lively
+}
+
 void populateMockTensors(TensorRegistry& reg) {
     auto add = [&](std::string name, std::vector<std::int64_t> shape, DType dt) {
         std::size_t n = 1;
         for (auto d : shape) n *= static_cast<std::size_t>(d > 0 ? d : 0);
         const std::size_t bpe = dtype_element_bytes(dt);
+        const std::size_t bytes = n * bpe;
         TensorHandle h;
-        h.name        = std::move(name);
+        h.name        = name;
         h.dtype       = dt;
         h.shape       = std::move(shape);
         h.byte_offset = 0;
-        h.byte_length = n * bpe;
-        // No backing source — read_slice() will return empty.  The
-        // registry exists for enumeration (state_dict list, shape /
-        // dtype hover), not for live byte reads in MockModel.  When a
-        // backend wants real bytes it plugs in an InMemoryTensorSource.
+        h.byte_length = bytes;
+        h.source      = std::make_shared<Mulberry32Source>(name_seed(name), bytes);
         reg.insert(std::move(h));
     };
     constexpr int kLayers = 22;

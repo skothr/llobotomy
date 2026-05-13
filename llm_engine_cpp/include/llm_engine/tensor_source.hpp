@@ -45,6 +45,11 @@ const char* dtype_name(DType d);
 // Source interface. Implementations choose the cheapest path (mmap +
 // memcpy, pread, HTTP range, etc.). pread() is named after the POSIX
 // call but does not require a real file descriptor.
+//
+// loaded() distinguishes "bytes are sitting in addressable memory right
+// now" (mmap, in-memory) from "bytes can be produced on demand but each
+// read pays compute or I/O" (Mulberry32Source, HfProxySource).  Lets
+// callers cheaply skip work that's only worth it when reads are free.
 class TensorSource {
 public:
     virtual ~TensorSource() = default;
@@ -60,12 +65,16 @@ public:
     // Total size of the source's data region, in bytes. Used for
     // bounds checks at handle-construction time.
     virtual std::size_t size_bytes() const = 0;
+
+    // True when bytes are already in addressable RAM (mmap'd file, in-
+    // memory buffer).  False when each pread() computes / fetches.
+    // Default false — implementations that are truly resident override.
+    virtual bool loaded() const { return false; }
 };
 
-// In-memory source — owns a std::vector<std::byte>. Used by MockModel
-// (to back synthetic weights), by CaptureBundle (to back per-forward-
-// pass activations / attention matrices), and by any backend that has
-// already loaded a tensor into RAM.
+// In-memory source — owns a std::vector<std::byte>. Used by CaptureBundle
+// (per-forward-pass activations / attention matrices), and by any backend
+// that has already loaded a tensor into RAM.
 class InMemoryTensorSource final : public TensorSource {
 public:
     explicit InMemoryTensorSource(std::vector<std::byte> bytes);
@@ -76,9 +85,29 @@ public:
     void pread(std::size_t offset, std::size_t n_bytes, void* out) const override;
     std::span<const std::byte> try_mmap() const override;
     std::size_t size_bytes() const override { return m_bytes.size(); }
+    bool        loaded   () const override { return true; }
 
 private:
     std::vector<std::byte> m_bytes;
+};
+
+// Mulberry32-backed source — generates deterministic f16/f32 bytes on each
+// pread().  Used by MockModel so its TensorHandles are architecturally
+// identical to real-backend handles (valid + readable + lazy bytes) rather
+// than empty pseudo-handles.  Same byte stream every call; no allocation.
+//
+// readable=true (pread always succeeds within size_bytes), loaded=false
+// (each call re-runs the PRNG).
+class Mulberry32Source final : public TensorSource {
+public:
+    Mulberry32Source(std::uint32_t seed, std::size_t size_bytes);
+
+    void pread(std::size_t offset, std::size_t n_bytes, void* out) const override;
+    std::size_t size_bytes() const override { return m_size; }
+
+private:
+    std::uint32_t m_seed;
+    std::size_t   m_size;
 };
 
 }  // namespace llmengine

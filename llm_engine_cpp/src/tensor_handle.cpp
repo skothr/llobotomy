@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <regex>
 #include <stdexcept>
 
 namespace llmengine {
@@ -115,6 +116,20 @@ std::size_t TensorHandle::element_count() const {
     return n;
 }
 
+bool TensorHandle::valid() const {
+    if (dtype == DType::Unknown) return false;
+    if (shape.empty())           return false;
+    // element_count returns 0 on any non-positive dim — catches malformed.
+    if (element_count() == 0)    return false;
+    const std::size_t bpe = dtype_element_bytes(dtype);
+    if (bpe > 0) {
+        // Non-block dtype: byte_length should match element_count * bpe
+        // (zero is allowed when caller hasn't filled it yet).
+        if (byte_length != 0 && byte_length != element_count() * bpe) return false;
+    }
+    return true;
+}
+
 std::vector<float> TensorHandle::read_slice(std::size_t element_offset,
                                             std::size_t n) const {
     if (!source || n == 0) return {};
@@ -158,7 +173,28 @@ TensorHandle::read_slice_2d(std::size_t row_offset, std::size_t row_count,
     return out;
 }
 
+namespace {
+
+// Canonical-path regex.  Segments are non-empty sequences of
+// [A-Za-z0-9_.], joined by '/'.  Excludes whitespace, anchors, and
+// fragment / query delimiters so paths can serve as DerivedCache keys
+// and survive the `view.get("tensors/<name>")` round-trip.
+//
+// Constructed at first call (function-local static is thread-safe in
+// C++11+).  Cheap — the registry has dozens of entries, not millions.
+const std::regex& canonical_path_re() {
+    static const std::regex re{R"(^[A-Za-z0-9_.]+(/[A-Za-z0-9_.]+)*$)"};
+    return re;
+}
+
+}  // namespace
+
 void TensorRegistry::insert(TensorHandle h) {
+    if (!std::regex_match(h.name, canonical_path_re())) {
+        throw std::invalid_argument(
+            "TensorRegistry::insert: name '" + h.name +
+            "' violates canonical-path scheme [A-Za-z0-9_.]+(/[A-Za-z0-9_.]+)*");
+    }
     auto it = index.find(h.name);
     if (it != index.end()) {
         all[it->second] = std::move(h);

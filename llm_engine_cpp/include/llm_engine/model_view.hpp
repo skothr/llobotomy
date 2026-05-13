@@ -19,6 +19,43 @@
 // serialisation, RPC, debugging. Typed field access is preferred for
 // in-process code: view.topology.nLayers reads cleaner than
 // view.get("topology/nLayers").
+//
+// ─── Threading contract ──────────────────────────────────────────────
+//
+// ModelView has three lifecycle phases.  Each field below lists which
+// phase it can be written in and what concurrent reads are safe.
+//
+//   1. BUILD phase — runs inside Model::loadCheckpoint on the engine
+//      thread.  Single writer, no readers (UI hasn't been told a
+//      checkpoint is ready).  Backends populate:
+//        provenance        — set once, frozen for the session
+//        topology          — set once, frozen
+//        tokenizer         — set once, frozen
+//        tensors           — registry filled; no concurrent reads
+//        surgery           — typically default-constructed; backend may
+//                            seed defaults
+//
+//   2. STEADY-STATE phase — runs until unloadCheckpoint.  UI reads
+//      every frame; the engine writes only to the fields below:
+//        captures map      — writes through `current` (atomic swap);
+//                            map itself is single-writer.  UI reads
+//                            via `current.load()` only.
+//        current           — std::atomic<std::shared_ptr<...>>.  Safe
+//                            for concurrent UI reads + engine writes.
+//        surgery           — backend mutates under its own internal
+//                            mutex; UI snapshots before reading.  Use
+//                            setAblation / setSteering, never mutate
+//                            directly from outside the backend.
+//        derived           — internally synchronised; safe at frame rate.
+//
+//      The static fields (provenance, topology, tokenizer, tensors)
+//      are READ-ONLY in steady state.  Mutating them is a programming
+//      error.
+//
+//   3. UNLOAD phase — runs inside Model::unloadCheckpoint.  ModelView::clear()
+//      resets every field; backends MUST quiesce all worker threads
+//      before calling it.  Callers must hold no shared_ptrs into the
+//      view's captures during clear() (the captures map is destroyed).
 
 #include "llm_engine/capture.hpp"
 #include "llm_engine/derived_cache.hpp"
@@ -101,6 +138,12 @@ struct ModelView {
         std::vector<LogitLensRow>, TensorStats
     >;
     Value get(std::string_view path) const;
+
+    // Reset every field to default.  Called by Model::unloadCheckpoint
+    // to guarantee a fresh session never inherits state from a prior
+    // one (ablations from model A clinging to model B's tensors, etc.).
+    // Caller MUST quiesce all engine-side worker threads first.
+    void clear();
 
     ModelView() = default;
     ModelView(const ModelView&)            = delete;

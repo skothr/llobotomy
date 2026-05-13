@@ -39,6 +39,21 @@ int main() {
     const TensorHandle* h = v.tensors.find(sd[0].name);
     assert(h != nullptr);
     assert(h->name == sd[0].name);
+
+    // Substrate guarantee: every mock handle is valid + readable + has
+    // a backing source (Mulberry32 PRNG).  Architecturally identical to
+    // a future GgufInspectorEngine handle — same TensorSource ABI, just
+    // bytes from a PRNG instead of disk.
+    assert(h->valid());
+    assert(h->readable());
+    assert(!h->loaded());            // PRNG generates on each pread
+
+    // A real read returns f32 bytes deterministically — same call twice
+    // gives the same result (the mock source is stateless).
+    auto first = h->read_slice(0, 8);
+    auto again = h->read_slice(0, 8);
+    assert(first.size() == 8);
+    assert(first == again);
 #endif
 
     return 0;

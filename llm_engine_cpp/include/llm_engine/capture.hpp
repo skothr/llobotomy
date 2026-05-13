@@ -59,11 +59,6 @@ struct CaptureBundle {
     // declare CaptureBundle without including the (large) model.hpp.
     // See capture.cpp for the inline get/put helpers.
     std::map<int, std::shared_ptr<ResidualSummary>> residual_summary;
-
-    // Snapshot version for the double-buffer pattern. The engine
-    // increments this with each new bundle so UI code can detect "the
-    // current capture changed" without comparing pointers.
-    std::uint64_t version = 0;
 };
 
 }  // namespace llmengine

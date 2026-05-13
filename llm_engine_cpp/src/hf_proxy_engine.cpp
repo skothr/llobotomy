@@ -281,9 +281,10 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
 void HFProxyEngine::unloadCheckpoint() {
     {
         std::lock_guard<std::mutex> lk(m_impl->mu);
-        m_impl->view.topology   = {};
-        m_impl->view.provenance = {};
-        m_impl->view.tensors    = {};
+        // ModelView::clear() resets every field — topology, provenance,
+        // tensors, captures, surgery, derived.  Required: surgery deltas
+        // tied to model-A tensors must not survive into a model-B session.
+        m_impl->view.clear();
     }
     const std::string del_path = std::string("/api/sessions/") + kSessionName;
     auto res = m_impl->client.Delete(del_path.c_str());

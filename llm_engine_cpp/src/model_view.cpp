@@ -69,4 +69,15 @@ ModelView::Value ModelView::get(std::string_view path) const {
     return {};
 }
 
+void ModelView::clear() {
+    provenance = {};
+    topology   = {};
+    tokenizer  = {};
+    tensors    = {};
+    captures.clear();
+    current.store(nullptr);
+    surgery    = {};
+    derived.clear();
+}
+
 }  // namespace llmengine

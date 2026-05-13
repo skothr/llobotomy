@@ -71,5 +71,20 @@ int main() {
         auto got = v.get("topology/not_a_field");
         assert(std::holds_alternative<std::monostate>(got));
     }
+
+    // clear() resets everything to default.  After clear, scalar
+    // getters return sentinels and tensor registry is empty.
+    v.clear();
+    {
+        auto got = v.get("topology/n_layers");
+        assert(std::holds_alternative<int>(got));
+        // ModelInfo::nLayers defaults to kNoInt (-1) — the engine's "no
+        // data" sentinel.
+        assert(std::get<int>(got) == -1);
+    }
+    {
+        auto got = v.get("tensors/blocks.0.attn.W_Q.weight");
+        assert(std::holds_alternative<std::monostate>(got));
+    }
     return 0;
 }

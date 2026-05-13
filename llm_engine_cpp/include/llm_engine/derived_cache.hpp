@@ -41,14 +41,32 @@ public:
     DerivedCache(const DerivedCache&)            = delete;
     DerivedCache& operator=(const DerivedCache&) = delete;
 
-    // Read a cached value or compute + cache it. The compute lambda
-    // returns a (value, byte_size) pair; byte_size is the caller's
-    // estimate used for eviction. Misses on type mismatch throw — that's
-    // a programming error, not a runtime miss.
+    // Read a cached value or compute + cache it.  The cache is LRU-
+    // bounded by total estimated bytes; misses on type mismatch throw
+    // (that's a programming error, not a runtime miss).
+    //
+    // Two overloads:
+    //
+    //   get_or_compute<T>(key, [] -> T { ... })
+    //      Uses sizeof(T) for accounting.  Right for fixed-size POD
+    //      results (TensorStats, ResidualSummary, scalars).
+    //
+    //   get_or_compute_sized<T>(key, [] -> std::pair<T, size_t> { ... })
+    //      Caller reports the value's actual byte footprint.  Right for
+    //      heap-allocating types (std::vector<float>, std::string,
+    //      std::vector<LogitLensRow> — anything where sizeof(T) lies).
     template <class T>
     std::shared_ptr<const T>
-    get_or_compute(std::string_view key,
-                   std::function<std::pair<T, std::size_t>()> compute) {
+    get_or_compute(std::string_view key, std::function<T()> compute) {
+        return get_or_compute_sized<T>(key, [c = std::move(compute)]() {
+            return std::pair<T, std::size_t>{c(), sizeof(T)};
+        });
+    }
+
+    template <class T>
+    std::shared_ptr<const T>
+    get_or_compute_sized(std::string_view key,
+                         std::function<std::pair<T, std::size_t>()> compute) {
         std::unique_lock lk(m_mu);
         const std::string k(key);
         auto it = m_map.find(k);

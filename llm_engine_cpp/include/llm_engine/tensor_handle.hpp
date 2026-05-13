@@ -50,8 +50,25 @@ struct TensorHandle {
     read_slice_2d(std::size_t row_offset, std::size_t row_count,
                   std::size_t col_offset, std::size_t col_count) const;
 
-    // True when the handle has a backing source and a known dtype.
-    bool valid() const { return source != nullptr && dtype != DType::Unknown; }
+    // Tri-state liveness — pick the strictest predicate that fits.
+    //
+    //   valid()    — handle's configuration is internally consistent:
+    //                dtype known, shape non-empty, byte_length matches.
+    //                Doesn't require a source — useful for
+    //                "header-parsed, source-not-yet-attached" handoffs.
+    //
+    //   readable() — read_slice() can produce bytes.  Requires a source
+    //                AND valid().  A Mulberry32Source-backed handle is
+    //                readable even though no bytes are in RAM.
+    //
+    //   loaded()   — bytes are already in addressable memory.  True for
+    //                mmap'd / in-memory sources, false for sources that
+    //                compute or fetch each pread (Mulberry32, HTTP).
+    //                Callers that want to avoid I/O latency consult
+    //                loaded() before scheduling expensive analyses.
+    bool valid   () const;
+    bool readable() const { return source != nullptr && valid(); }
+    bool loaded  () const { return readable() && source->loaded(); }
 };
 
 // TensorRegistry — name → handle, plus enumeration order. Used by

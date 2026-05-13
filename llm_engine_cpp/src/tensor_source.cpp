@@ -67,4 +67,46 @@ std::span<const std::byte> InMemoryTensorSource::try_mmap() const {
     return {m_bytes.data(), m_bytes.size()};
 }
 
+// ── Mulberry32Source ──────────────────────────────────────────────────────
+// Deterministic PRNG; same byte stream every read.  Generates 32 bits at a
+// time, writes them little-endian; truncates the last word to whatever fits.
+//
+// Implementation is std::Mulberry32-equivalent.  We intentionally re-seed
+// from `m_seed + offset` on each pread() rather than holding state, so the
+// source is stateless / thread-safe / reentrant.  Stream at byte offset k
+// is `prng(seed + (k / 4))` interpreted as f32; reads aligned to 4 bytes
+// see identical bytes regardless of where the slice started.
+Mulberry32Source::Mulberry32Source(std::uint32_t seed, std::size_t size_bytes)
+    : m_seed(seed), m_size(size_bytes) {}
+
+void Mulberry32Source::pread(std::size_t offset, std::size_t n_bytes, void* out) const {
+    if (offset >= m_size) return;
+    const std::size_t avail = m_size - offset;
+    const std::size_t to_copy = n_bytes < avail ? n_bytes : avail;
+    auto* dst = static_cast<std::uint8_t*>(out);
+
+    // Generate word-aligned, write byte-by-byte to handle misaligned offsets.
+    std::size_t word_idx = offset / 4;
+    std::size_t in_word  = offset % 4;
+    std::size_t written  = 0;
+    while (written < to_copy) {
+        std::uint32_t a = m_seed + static_cast<std::uint32_t>(word_idx) * 0x6D2B79F5u;
+        std::uint32_t t = a;
+        t = (t ^ (t >> 15)) * (t | 1u);
+        t ^= t + ((t ^ (t >> 7)) * (t | 61u));
+        const std::uint32_t v = t ^ (t >> 14);
+        const std::uint8_t bytes[4] = {
+            static_cast<std::uint8_t>( v        & 0xFF),
+            static_cast<std::uint8_t>((v >>  8) & 0xFF),
+            static_cast<std::uint8_t>((v >> 16) & 0xFF),
+            static_cast<std::uint8_t>((v >> 24) & 0xFF),
+        };
+        while (in_word < 4 && written < to_copy) {
+            dst[written++] = bytes[in_word++];
+        }
+        in_word = 0;
+        ++word_idx;
+    }
+}
+
 }  // namespace llmengine

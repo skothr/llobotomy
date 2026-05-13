@@ -158,6 +158,86 @@ void test_registry() {
     assert(reg.find("alpha")->byte_offset == 999);
 }
 
+void test_canonical_path_validation() {
+    TensorRegistry reg;
+
+    // Canonical names accepted: letters, digits, dots, underscores, slashes.
+    auto ok = [&](std::string name) {
+        TensorHandle h;
+        h.name = std::move(name);
+        reg.insert(h);
+    };
+    ok("blocks.0.attn.W_Q.weight");
+    ok("ln_f.weight");
+    ok("alpha/beta/gamma");
+    ok("lm_head.weight");
+
+    // Non-canonical names throw — spaces, hashes, query chars, brackets, …
+    auto rejects = [&](std::string name) {
+        TensorHandle h;
+        h.name = std::move(name);
+        bool threw = false;
+        try { reg.insert(h); }
+        catch (const std::invalid_argument&) { threw = true; }
+        assert(threw);
+    };
+    rejects("foo bar");
+    rejects("");
+    rejects("foo/");
+    rejects("/foo");
+    rejects("foo//bar");
+    rejects("foo#stats");
+    rejects("foo?bins=64");
+    rejects("foo[0]");
+}
+
+void test_tri_state() {
+    // Empty handle: not valid, not readable, not loaded.
+    TensorHandle empty;
+    assert(!empty.valid());
+    assert(!empty.readable());
+    assert(!empty.loaded());
+
+    // Valid + readable + loaded: in-memory source.
+    std::vector<float> data{1.0f, 2.0f, 3.0f, 4.0f};
+    TensorHandle h_loaded;
+    h_loaded.source      = InMemoryTensorSource::from_floats(data);
+    h_loaded.name        = "x";
+    h_loaded.dtype       = DType::F32;
+    h_loaded.shape       = {4};
+    h_loaded.byte_length = data.size() * sizeof(float);
+    assert(h_loaded.valid());
+    assert(h_loaded.readable());
+    assert(h_loaded.loaded());
+
+    // Valid + readable, NOT loaded: PRNG source generates on demand.
+    TensorHandle h_lazy;
+    h_lazy.source      = std::make_shared<Mulberry32Source>(42u, 16);
+    h_lazy.name        = "y";
+    h_lazy.dtype       = DType::F32;
+    h_lazy.shape       = {4};
+    h_lazy.byte_length = 16;
+    assert(h_lazy.valid());
+    assert(h_lazy.readable());
+    assert(!h_lazy.loaded());
+
+    // Source-less but config-correct: valid but not readable.
+    TensorHandle h_config_only;
+    h_config_only.name        = "z";
+    h_config_only.dtype       = DType::F32;
+    h_config_only.shape       = {4};
+    h_config_only.byte_length = 16;
+    assert(h_config_only.valid());
+    assert(!h_config_only.readable());
+    assert(!h_config_only.loaded());
+
+    // Read from the PRNG source — verify determinism.
+    auto first = h_lazy.read_slice(0, 4);
+    auto again = h_lazy.read_slice(0, 4);
+    assert(first.size() == 4);
+    assert(first == again);
+}
+
 void test_unsupported_dtype_returns_empty() {
     // Q4_0 has no dequantiser in this build — read_slice should return {}
     // rather than throwing or asserting.
@@ -184,6 +264,8 @@ int main() {
     test_bf16_dequant();
     test_2d_slice();
     test_registry();
+    test_canonical_path_validation();
+    test_tri_state();
     test_unsupported_dtype_returns_empty();
     return 0;
 }
