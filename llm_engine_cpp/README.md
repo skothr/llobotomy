@@ -207,11 +207,11 @@ controls whether the test binaries get built.
 |---|---|---|
 | substrate | `ModelView` + `TensorHandle` + `CaptureBundle` + `DerivedCache` + `Capabilities` + tri-state + `LoadOptions` + structured intervention refs | shipped |
 | HFProxy P1 | `loadCheckpoint` / `getModelInfo` / heartbeat | shipped |
-| HFProxy P2 | per-frame samplers (`getAttentionPattern`, `getResidualSummary`, `getQKVStats`); `CaptureBundle` population | in progress |
+| HFProxy P2 | per-frame samplers (`getAttentionPattern`, `getResidualSummary`, `getQKVStats`); `CaptureBundle` population; Python `/capture` endpoint | shipped |
 | HFProxy P3 | intervention (`setAblation` / `setSteering`) | not started |
 | HFProxy P4 | WS streams (logit-lens, generate) | not started |
-| Wave C | `GgufInspectorEngine` — fully-native GGUF inspector | in progress |
-| Wave D | `LlamaCppEngine` — embedded inference + activation capture | not started |
+| Wave C | `GgufInspectorEngine` — fully-native GGUF inspector | shipped |
+| Wave D | `LlamaCppEngine` — embedded inference + activation capture | planned (see `docs/WAVE_D_LLAMACPP_PLAN.md`) |
 | Wave E | `LibtorchEngine` — embedded PyTorch C++ | deferred |
 | Wave F | native_runtime — from-scratch forward pass | research-grade |
 
