@@ -8,8 +8,8 @@
 
 #include "appstate.hpp"
 #include "logger.hpp"
-#include "model/hf_proxy_engine.hpp"
-#include "model/model.hpp"
+#include "llm_engine/hf_proxy_engine.hpp"
+#include "llm_engine/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/dialogs.hpp"

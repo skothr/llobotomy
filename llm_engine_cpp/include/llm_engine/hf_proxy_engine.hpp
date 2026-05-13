@@ -24,14 +24,14 @@
 // picks the implementation; LLOB_BACKEND_URL overrides the FastAPI base
 // URL (default http://127.0.0.1:8000).
 
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace llob {
+namespace llmengine {
 
 class HFProxyEngine : public MockModel {
 public:
@@ -52,4 +52,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-}  // namespace llob
+}  // namespace llmengine

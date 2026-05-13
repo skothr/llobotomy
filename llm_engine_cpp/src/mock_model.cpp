@@ -4,7 +4,7 @@
 // methods return the empty-vector / NaN / "" sentinels declared in
 // model.hpp, and the UI shows "no data" placeholders instead.
 
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -14,7 +14,7 @@
 #include <cstring>
 #include <string>
 
-namespace llob {
+namespace llmengine {
 
 namespace {
 
@@ -831,4 +831,4 @@ std::vector<LogEntry> MockModel::drainEngineLogs() {
     return {};
 }
 
-}  // namespace llob
+}  // namespace llmengine

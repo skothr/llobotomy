@@ -1,5 +1,5 @@
 #pragma once
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 
 #include <string_view>
 
@@ -14,20 +14,20 @@ namespace llob {
 //   `comp_ref` matches the ref string passed to the cell (e.g. "W_Q",
 //   "W_in_gate", "norm1").  Uses canonical engine naming
 //   `blocks.<L>.<area>.<comp>.weight` for the tensor lookup.
-void ComponentTooltip(Model& m, int layer, std::string_view comp_ref);
+void ComponentTooltip(llmengine::Model& m, int layer, std::string_view comp_ref);
 
 // Single attention head: pattern label, mini attention thumb, per-head
 // stats from getHeadStats.
-void HeadTooltip(Model& m, int layer, int head);
+void HeadTooltip(llmengine::Model& m, int layer, int head);
 
 // Block label: layer summary (resid/attn/mlp norms + dead-neuron count).
-void LayerTooltip(Model& m, int layer);
+void LayerTooltip(llmengine::Model& m, int layer);
 
 // Render any persistent panels pinned via middle-click on a tooltip-
 // eligible item.  Each panel reuses the matching tooltip's body — same
 // data, same code — so a real-backend hook lights up both surfaces.
 // Submit once per frame near the end of the main loop (after panels;
 // before the status bar is fine).
-void DrawPinnedPanels(Model& m);
+void DrawPinnedPanels(llmengine::Model& m);
 
 }  // namespace llob

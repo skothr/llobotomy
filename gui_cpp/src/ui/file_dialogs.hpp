@@ -1,6 +1,6 @@
 #pragma once
 #include "appstate.hpp"
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 
 namespace llob {
 
@@ -18,6 +18,6 @@ struct FileDialogActions {
 // Submit once per frame near the end of the main loop (after panels;
 // before status bar is fine).  Modal dialogs over-render everything else,
 // so order doesn't matter for them.
-void DispatchFileDialogs(AppState& s, Model& m, const FileDialogActions& act);
+void DispatchFileDialogs(AppState& s, llmengine::Model& m, const FileDialogActions& act);
 
 }  // namespace llob

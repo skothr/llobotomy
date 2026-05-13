@@ -2,6 +2,10 @@
 #include "keybindings.hpp"
 #include "style.hpp"
 
+#include "llm_engine/hf_proxy_engine.hpp"
+#include "llm_engine/log.hpp"
+#include "llm_engine/model.hpp"
+
 #include <imgui.h>
 
 #include <chrono>
@@ -14,7 +18,68 @@
 
 namespace llob {
 
-struct Model;     // fwd; src/model/model.hpp
+// Engine types live in `llmengine::` (testing/llm_engine_cpp/).  Re-export
+// the surface gui_cpp consumes into `llob::` so existing call sites
+// (`llob::Model`, `llob::Severity`, the various DTOs) keep resolving
+// without a sweep across every workspace.  New code outside this file is
+// free to use the canonical `llmengine::` names directly.
+using llmengine::Severity;
+using llmengine::LogEntry;
+using llmengine::SeverityName;
+using llmengine::SeverityShort;
+using llmengine::Model;
+using llmengine::MockModel;
+using llmengine::HFProxyEngine;
+using llmengine::HeadBias;
+using llmengine::Mulberry32;
+using llmengine::kNoFloat;
+using llmengine::kNoInt;
+using llmengine::kNoSize;
+// Architecture / weights
+using llmengine::ParamBreakdownRow;
+using llmengine::LiveActivations;
+using llmengine::TensorMeta;
+using llmengine::TensorStats;
+using llmengine::DiffStats;
+// Inference
+using llmengine::ResidualContribution;
+using llmengine::ResidualSummary;
+using llmengine::LogitLensRow;
+using llmengine::LogitDist;
+using llmengine::MlpFeatureActivation;
+using llmengine::ProbeEntry;
+using llmengine::SteeringConfig;
+// Attention
+using llmengine::QKVStats;
+using llmengine::HeadStatRow;
+using llmengine::PatchSourceState;
+// Probes / SAE
+using llmengine::FeatureSummary;
+using llmengine::FeatureCard;
+using llmengine::FeatureExample;
+using llmengine::CoFiringEntry;
+using llmengine::SAETrainingMetrics;
+using llmengine::ProbeTrainState;
+// Training
+using llmengine::TrainingState;
+using llmengine::TrainingMetricCard;
+using llmengine::LossCurve;
+// Finetune
+using llmengine::LoRAConfig;
+using llmengine::OptimizerConfig;
+using llmengine::DataConfig;
+using llmengine::EvalDiffMetric;
+using llmengine::ABSample;
+// Datasets
+using llmengine::DatasetSummary;
+using llmengine::DatasetSpan;
+using llmengine::DatasetSample;
+using llmengine::DatasetSampleStats;
+using llmengine::SourceMixRow;
+using llmengine::DatasetDistribution;
+// Engine runtime
+using llmengine::EngineMetrics;
+using llmengine::ExportEntry;
 
 struct ModelInfo {
     std::string name;
@@ -28,19 +93,6 @@ struct ModelInfo {
 
 enum class Workspace : int {
     Arch = 0, Inf, Attn, Probes, Train, Ft, Data, Raw, Logs, Count
-};
-
-enum class Severity : int {
-    Trace = 0, Debug, Info, Warn, Error, Fatal,
-};
-const char* SeverityName(Severity s);   // "trace" / "debug" / ...
-const char* SeverityShort(Severity s);  // "TRACE" / "DEBUG" / ... 5-char padded
-
-struct LogEntry {
-    std::int64_t  ts_ms;     // unix ms
-    Severity      sev;       // trace/debug/info/warn/error/fatal
-    std::string   kind;      // source tag: fwd/probe/ablate/glfw/font/...
-    std::string   msg;
 };
 
 struct ProjectTab {

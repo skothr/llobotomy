@@ -1,4 +1,4 @@
-#include "model/hf_proxy_engine.hpp"
+#include "llm_engine/hf_proxy_engine.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -12,7 +12,7 @@
 
 using nlohmann::json;
 
-namespace llob {
+namespace llmengine {
 
 namespace {
 
@@ -142,4 +142,4 @@ std::vector<LogEntry> HFProxyEngine::drainEngineLogs() {
     return out;
 }
 
-}  // namespace llob
+}  // namespace llmengine

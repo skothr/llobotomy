@@ -22,7 +22,7 @@
 //   docs/MODEL_HOOKS.md catalogues each method, its callers, and what a
 //   real backend should plumb.
 
-#include "appstate.hpp"     // for LogEntry / Severity (used by drainEngineLogs)
+#include "llm_engine/log.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -30,7 +30,7 @@
 #include <string_view>
 #include <vector>
 
-namespace llob {
+namespace llmengine {
 
 // ── Sentinel values for "no data yet" ─────────────────────────────────────
 inline constexpr float        kNoFloat = std::numeric_limits<float>::quiet_NaN();
@@ -597,4 +597,4 @@ struct MockModel : Model {
     void exportSnapshot(std::string_view) override {}
 };
 
-}  // namespace llob
+}  // namespace llmengine

@@ -60,18 +60,18 @@ target_include_directories(imgui_file_dialog SYSTEM PUBLIC
 )
 target_link_libraries(imgui_file_dialog PUBLIC imgui)
 
-# Header-only HTTP client (cpp-httplib v0.44.0, MIT, libs/cpp-httplib/LICENSE)
-# and JSON for Modern C++ (nlohmann/json v3.12.0, MIT, libs/nlohmann_json/LICENSE.MIT).
-# Both are SYSTEM includes so their warnings don't drown out our own code's.
-add_library(cpp_httplib INTERFACE)
-target_include_directories(cpp_httplib SYSTEM INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/libs/cpp-httplib
-)
-
-add_library(nlohmann_json INTERFACE)
-target_include_directories(nlohmann_json SYSTEM INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/libs/nlohmann_json
-)
+# ---------------------------------------------------------------------------
+# llm_engine — abstract Model interface, MockModel, HFProxyEngine.  Lives
+# in testing/llm_engine_cpp/ as an independent library so other tools can
+# pick it up (CLI, future native backends, etc.).  Vendored cpp-httplib +
+# nlohmann/json move with it as private deps.
+#
+# Thread the LLOB_USE_MOCK_DATA flag through to the engine's matching
+# option (LLM_ENGINE_USE_MOCK_DATA) so a single -DLLOB_USE_MOCK_DATA=OFF
+# at this level cascades to MockModel returning sentinels too.
+# ---------------------------------------------------------------------------
+set(LLM_ENGINE_USE_MOCK_DATA ${LLOB_USE_MOCK_DATA} CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../llm_engine_cpp llm_engine_cpp_build)
 
 # ---------------------------------------------------------------------------
 # llobotomy executable
@@ -82,8 +82,6 @@ add_executable(llobotomy
   src/appstate.cpp
   src/keybindings.cpp
   src/logger.cpp
-  src/model/mock_model.cpp
-  src/model/hf_proxy_engine.cpp
   src/ui/colormap.cpp
   src/ui/chrome.cpp
   src/ui/dialogs.cpp
@@ -104,7 +102,7 @@ add_executable(llobotomy
   src/workspaces/logs.cpp
 )
 target_include_directories(llobotomy PRIVATE src libs)
-target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog cpp_httplib nlohmann_json)
+target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog llmengine::llm_engine)
 target_compile_options(llobotomy PRIVATE
   -Wall -Wextra -Wpedantic
   -Wno-c99-designator

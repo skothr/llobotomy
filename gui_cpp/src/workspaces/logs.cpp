@@ -10,7 +10,7 @@
 
 #include "appstate.hpp"
 #include "logger.hpp"
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/fmt.hpp"

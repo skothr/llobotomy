@@ -1,10 +1,10 @@
 #pragma once
 //
 // fmt — sentinel-aware string formatters for `Model::*` return values.
-// Every workspace uses these so a `kNoFloat` / `kNoInt` / `kNoSize` from the
+// Every workspace uses these so a `kNoFloat` / `llmengine::kNoInt` / `llmengine::kNoSize` from the
 // backend renders consistently as "—" instead of e.g. "nan" or "-1".
 
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -20,12 +20,12 @@ inline std::string FmtFloat(float v, const char* spec = "%.3f") {
     return buf;
 }
 inline std::string FmtInt(int v, const char* spec = "%d") {
-    if (v == kNoInt) return "—";
+    if (v == llmengine::kNoInt) return "—";
     char buf[32]; std::snprintf(buf, sizeof buf, spec, v);
     return buf;
 }
 inline std::string FmtSize(std::int64_t v) {
-    if (v == kNoSize) return "—";
+    if (v == llmengine::kNoSize) return "—";
     char buf[32];
     if      (v >= (std::int64_t(1) << 30)) std::snprintf(buf, sizeof buf, "%.1f GB", v / double(1ll << 30));
     else if (v >= (std::int64_t(1) << 20)) std::snprintf(buf, sizeof buf, "%.0f MB", v / double(1ll << 20));
@@ -34,7 +34,7 @@ inline std::string FmtSize(std::int64_t v) {
     return buf;
 }
 inline std::string FmtTokens(std::int64_t n) {
-    if (n == kNoSize) return "—";
+    if (n == llmengine::kNoSize) return "—";
     char buf[32];
     if      (n >= 1'000'000'000ll) std::snprintf(buf, sizeof buf, "%.1fB",  n / 1e9);
     else if (n >= 1'000'000ll)     std::snprintf(buf, sizeof buf, "%.0fM",  n / 1e6);

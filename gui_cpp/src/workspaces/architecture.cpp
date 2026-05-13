@@ -9,7 +9,7 @@
 #include "workspaces/workspaces.hpp"
 
 #include "appstate.hpp"
-#include "model/model.hpp"
+#include "llm_engine/model.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 #include "ui/colormap.hpp"
