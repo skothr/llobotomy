@@ -211,8 +211,8 @@ controls whether the test binaries get built.
 | HFProxy P3 | intervention (`setAblation` / `setSteering`) | not started |
 | HFProxy P4 | WS streams (logit-lens, generate) | not started |
 | Wave C | `GgufInspectorEngine` — fully-native GGUF inspector | shipped |
-| Wave D | `LlamaCppEngine` — embedded inference + activation capture | planned (see `docs/WAVE_D_LLAMACPP_PLAN.md`) |
-| Wave E | `LibtorchEngine` — embedded PyTorch C++ | deferred |
+| Wave D | `LlamaCppEngine` — embedded inference + cb_eval attention capture; opt-in via `LLM_ENGINE_BUILD_LLAMA_CPP=ON` | shipped (first cut — attention only; residual / logits / per-arch / intervention deferred) |
+| Wave E | `LibtorchEngine` — embedded PyTorch C++ | deferred (planned: `docs/WAVE_E_LIBTORCH_PLAN.md`) |
 | Wave F | native_runtime — from-scratch forward pass | research-grade |
 
 See `../gui_cpp/docs/HFPROXY_PLAN.md` and `docs/SUPPORTED_ARCHITECTURES.md`

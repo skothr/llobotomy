@@ -23,27 +23,31 @@ warn() { printf "${YELLOW}⚠${RESET} %s\n" "$*"; }
 err()  { printf "${RED}✗${RESET} %s\n" "$*" >&2; }
 
 run_mode() {
-    local mode="$1"   # "ON" | "OFF"
-    local build_dir="${ENGINE_DIR}/build-verify-${mode,,}"
+    local mode="$1"           # "ON" | "OFF" — controls LLM_ENGINE_USE_MOCK_DATA
+    local llama="${2:-OFF}"   # "ON" | "OFF" — controls LLM_ENGINE_BUILD_LLAMA_CPP
+    local tag="${mode,,}"
+    if [[ "$llama" == "ON" ]]; then tag="${tag}-llama"; fi
+    local build_dir="${ENGINE_DIR}/build-verify-${tag}"
     echo
-    echo "── Build mode: LLM_ENGINE_USE_MOCK_DATA=${mode} ───────────────────"
+    echo "── Build mode: LLM_ENGINE_USE_MOCK_DATA=${mode}  LLAMA_CPP=${llama} ──"
 
     cmake -S "$ENGINE_DIR" -B "$build_dir" \
           -DLLM_ENGINE_USE_MOCK_DATA="$mode" \
+          -DLLM_ENGINE_BUILD_LLAMA_CPP="$llama" \
           -DLLM_ENGINE_BUILD_TESTS=ON \
           > "${build_dir}-configure.log" 2>&1 \
-        || { err "cmake configure failed (${mode})"; cat "${build_dir}-configure.log"; return 1; }
-    ok "configured (${mode})"
+        || { err "cmake configure failed (${mode}/${llama})"; cat "${build_dir}-configure.log"; return 1; }
+    ok "configured (${mode}/${llama})"
 
     cmake --build "$build_dir" -j > "${build_dir}-build.log" 2>&1 \
-        || { err "build failed (${mode})"; tail -50 "${build_dir}-build.log"; return 1; }
-    ok "built (${mode})"
+        || { err "build failed (${mode}/${llama})"; tail -50 "${build_dir}-build.log"; return 1; }
+    ok "built (${mode}/${llama})"
 
     echo "  Smoke tests:"
     ctest --test-dir "$build_dir" -L smoke --output-on-failure 2>&1 \
         | sed 's/^/    /' \
-        || { err "smoke tests failed (${mode})"; return 1; }
-    ok "smoke passed (${mode})"
+        || { err "smoke tests failed (${mode}/${llama})"; return 1; }
+    ok "smoke passed (${mode}/${llama})"
 
     echo "  Deep tests (env-gated; skips are not failures):"
     # Note: deep tests should self-skip with exit 0 when their required
@@ -58,8 +62,8 @@ run_mode() {
     if [[ "${deep_count:-0}" -gt 0 ]]; then
         ctest --test-dir "$build_dir" -L deep --output-on-failure 2>&1 \
             | sed 's/^/    /' \
-            || { err "deep tests failed (${mode})"; return 1; }
-        ok "deep ran (${mode}) — ${deep_count} test(s)"
+            || { err "deep tests failed (${mode}/${llama})"; return 1; }
+        ok "deep ran (${mode}/${llama}) — ${deep_count} test(s)"
     else
         warn "deep tier has no registered tests (yet)"
     fi
@@ -68,8 +72,22 @@ run_mode() {
 echo "llm_engine verify.sh"
 echo "Engine dir: $ENGINE_DIR"
 
-run_mode ON
-run_mode OFF
+# Default sweep: 2 modes (MOCK_DATA ON/OFF) × LLAMA_CPP=OFF.
+# Pass `--llama` as a flag to also run the LLAMA_CPP=ON pair (needs
+# llama.cpp pre-built at /home/ai/ai-projects/llm/lib/llama.cpp).
+INCLUDE_LLAMA=0
+for arg in "$@"; do
+    case "$arg" in
+        --llama|--with-llama) INCLUDE_LLAMA=1 ;;
+    esac
+done
+
+run_mode ON  OFF
+run_mode OFF OFF
+if [[ "$INCLUDE_LLAMA" == "1" ]]; then
+    run_mode ON  ON
+    run_mode OFF ON
+fi
 
 echo
-ok "verify.sh complete — both modes pass smoke; deep tier ran where applicable"
+ok "verify.sh complete — all configurations pass smoke; deep tier ran where applicable"
