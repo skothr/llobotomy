@@ -11,6 +11,14 @@
 #include "llm_engine/tensor_source.hpp"
 #include "llama_cpp_internal.hpp"
 
+// Standard headers used by both #ifdef branches (cmath / algorithm by
+// the Wave D extension methods like getResidualSummary + getOutputLogits;
+// these methods are guarded individually below).  Including unconditionally
+// keeps the headers available wherever they're needed.
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
 #ifdef LLM_ENGINE_HAVE_LLAMA_CPP
 
 // llama.cpp public headers — SYSTEM include so their warnings stay quiet.
@@ -322,6 +330,119 @@ std::vector<std::string> LlamaCppEngine::getCurrentTokens()
     return bundle->token_strs;
 }
 
+// ── getResidualSummary ────────────────────────────────────────────────────────
+//
+// Reads the captured residual_post[layer] tensor and computes per-layer
+// scalar summaries (norms, kurtosis).  cos_prev would compare to the
+// previous layer's residual — leave as sentinel until both layers'
+// captures are available.
+
+ResidualSummary LlamaCppEngine::getResidualSummary(int layer)
+{
+    ResidualSummary s;
+    auto bundle = m_impl->view.current.load();
+    if (!bundle) return s;
+    auto it = bundle->residual_post.find(layer);
+    if (it == bundle->residual_post.end()) return s;
+
+    const TensorHandle& h = it->second;
+    // Shape [seq, d_model] — flatten and compute scalars on the last token
+    // (most informative for "what does the residual look like right now").
+    if (h.shape.size() < 2) return s;
+    const std::size_t seq     = static_cast<std::size_t>(h.shape[0]);
+    const std::size_t d_model = static_cast<std::size_t>(h.shape[1]);
+    if (seq == 0 || d_model == 0) return s;
+
+    // Last-token slice.
+    auto row = h.read_slice((seq - 1) * d_model, d_model);
+    if (row.size() != d_model) return s;
+
+    // L2 norm.
+    double sq = 0.0;
+    for (float v : row) sq += static_cast<double>(v) * v;
+    s.resid_norm = static_cast<float>(std::sqrt(sq));
+
+    // Excess kurtosis (Fisher).  E[(x - μ)^4] / σ^4 - 3.
+    double mean = 0.0;
+    for (float v : row) mean += v;
+    mean /= static_cast<double>(d_model);
+    double m2 = 0.0, m4 = 0.0;
+    for (float v : row) {
+        double d = static_cast<double>(v) - mean;
+        m2 += d * d;
+        m4 += d * d * d * d;
+    }
+    m2 /= static_cast<double>(d_model);
+    m4 /= static_cast<double>(d_model);
+    if (m2 > 0.0) {
+        s.kurtosis = static_cast<float>(m4 / (m2 * m2) - 3.0);
+    }
+
+    // attn_out_norm / mlp_out_norm — would need separate captures of those
+    // intermediate tensors.  Leave as sentinel for this iteration.
+    return s;
+}
+
+// ── getOutputLogits ───────────────────────────────────────────────────────────
+//
+// Top-k logits from the final position of the most-recent capture.
+// Applies softmax to the raw logits so the returned probs sum to 1 (the
+// UI expects probabilities, not raw logits).  Token strings come from
+// llama_token_to_piece on the cached model + tokenizer.
+
+std::vector<LogitDist> LlamaCppEngine::getOutputLogits(int k)
+{
+    auto bundle = m_impl->view.current.load();
+    if (!bundle || !bundle->logits.has_value()) return {};
+
+    const TensorHandle& h = *bundle->logits;
+    const std::size_t n_vocab =
+        h.shape.size() >= 2 ? static_cast<std::size_t>(h.shape.back()) : 0;
+    if (n_vocab == 0) return {};
+
+    auto raw = h.read_slice(0, n_vocab);
+    if (raw.size() != n_vocab) return {};
+
+    // Softmax with max-subtract for numerical stability.
+    float mx = raw[0];
+    for (float v : raw) if (v > mx) mx = v;
+    std::vector<float> probs(n_vocab);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < n_vocab; ++i) {
+        probs[i] = std::exp(raw[i] - mx);
+        sum += probs[i];
+    }
+    if (sum > 0.0) {
+        for (auto& p : probs) p = static_cast<float>(p / sum);
+    }
+
+    // Top-k by probability.  Pair (prob, idx), partial_sort.
+    std::vector<std::pair<float, int>> ranked;
+    ranked.reserve(n_vocab);
+    for (std::size_t i = 0; i < n_vocab; ++i) {
+        ranked.emplace_back(probs[i], static_cast<int>(i));
+    }
+    const int kk = std::min(static_cast<int>(n_vocab),
+                            std::max(1, k));
+    std::partial_sort(
+        ranked.begin(),
+        ranked.begin() + kk,
+        ranked.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    std::vector<LogitDist> out;
+    out.reserve(static_cast<std::size_t>(kk));
+    for (int i = 0; i < kk; ++i) {
+        LogitDist d;
+        d.token    = "tok_" + std::to_string(ranked[i].second);  // raw token id; UI prefers string but vocab decode would need the model
+        d.prob     = ranked[i].first;
+        d.delta    = 0.0f;
+        d.selected = (i == 0);
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
 // ── getCapabilities ───────────────────────────────────────────────────────────
 
 Model::Capabilities LlamaCppEngine::getCapabilities() const
@@ -329,13 +450,13 @@ Model::Capabilities LlamaCppEngine::getCapabilities() const
     return Capabilities{
         .has_topology     = true,
         .has_tokenizer    = true,
-        .has_state_dict   = false,   // not yet wired
+        .has_state_dict   = false,   // LlamaCppSource for view.tensors still TODO
         .has_attention    = true,
-        .has_residual     = false,   // future
-        .has_logit_lens   = false,   // future
-        .has_token_stream = false,   // future
+        .has_residual     = true,    // cb_eval captures l_out-{N}
+        .has_logit_lens   = true,    // logits captured post-decode
+        .has_token_stream = false,   // future — needs llama_decode loop
         .has_captures     = true,
-        .has_intervention = false,
+        .has_intervention = false,   // future — needs custom forward
         .has_weight_deltas= false,
         .has_training     = false,
     };

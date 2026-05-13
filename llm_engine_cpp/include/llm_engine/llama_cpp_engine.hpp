@@ -57,6 +57,14 @@ public:
 
     std::vector<std::string> getCurrentTokens() override;
 
+    // Per-layer residual stream summary derived from the most-recent
+    // capture.  Computed lazily from the captured residual_post tensor.
+    ResidualSummary getResidualSummary(int layer) override;
+
+    // Top-k output logits from the most-recent capture's final-position
+    // logits.  Returns {} when no capture is loaded.
+    std::vector<LogitDist> getOutputLogits(int k) override;
+
     // Capability advertisement.
     Capabilities    getCapabilities() const override;
 

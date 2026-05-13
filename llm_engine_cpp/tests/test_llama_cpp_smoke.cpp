@@ -75,6 +75,8 @@ void test_capabilities()
     llmengine::LlamaCppEngine engine;
     auto caps = engine.getCapabilities();
     REQUIRE(caps.has_attention,  "has_attention advertised");
+    REQUIRE(caps.has_residual,   "has_residual advertised (Wave D extensions)");
+    REQUIRE(caps.has_logit_lens, "has_logit_lens advertised (Wave D extensions — logits captured)");
     REQUIRE(caps.has_topology,   "has_topology advertised");
     REQUIRE(!caps.has_intervention, "has_intervention not advertised");
     REQUIRE(!caps.has_token_stream, "has_token_stream not advertised");

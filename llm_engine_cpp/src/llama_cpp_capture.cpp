@@ -76,6 +76,23 @@ static int parse_kq_softmax_layer(const char* name)
     return -1;
 }
 
+// Try to parse "l_out-{N}" → layer N (the residual stream after layer N).
+// Llama-family tensor name in current llama.cpp.  Returns -1 on mismatch.
+static int parse_residual_post_layer(const char* name)
+{
+    std::string_view sv(name);
+    static const std::string_view pfx = "l_out-";
+    if (sv.size() <= pfx.size() || sv.substr(0, pfx.size()) != pfx) return -1;
+    std::string_view tail = sv.substr(pfx.size());
+    int layer = 0;
+    if (tail.empty()) return -1;
+    for (char c : tail) {
+        if (c < '0' || c > '9') return -1;
+        layer = layer * 10 + (c - '0');
+    }
+    return layer;
+}
+
 // ─── cb_eval callback ─────────────────────────────────────────────────────────
 
 // Signature required by ggml_backend_sched_eval_callback:
@@ -92,10 +109,41 @@ static bool capture_cb_eval(struct ggml_tensor* t, bool ask, void* user_data)
     const char* tname = ggml_get_name(t);
     if (!tname || tname[0] == '\0') return true;
 
-    int layer = parse_kq_softmax_layer(tname);
-    if (layer < 0) return true;     // not a tensor we care about
+    // Attention: kq_soft_max-{N}
+    int attn_layer = parse_kq_softmax_layer(tname);
+    // Residual stream: l_out-{N}
+    int resid_layer = parse_residual_post_layer(tname);
 
-    if (ask) return true;           // yes, we want to observe this layer
+    if (attn_layer < 0 && resid_layer < 0) return true;  // not a tensor we care about
+    if (ask) return true;           // yes, we want to observe
+
+    // Branch by tensor type.  Residual is the simpler shape: [d_model, seq, 1, 1].
+    if (resid_layer >= 0) {
+        if (t->type != GGML_TYPE_F32) return true;
+        int64_t d_model = t->ne[0];
+        int64_t seq     = t->ne[1];
+        if (d_model <= 0 || seq <= 0) return true;
+        std::size_t n_elem = static_cast<std::size_t>(d_model * seq);
+        std::vector<float> data(n_elem);
+        ggml_backend_tensor_get(t, data.data(), 0, n_elem * sizeof(float));
+
+        auto src = InMemoryTensorSource::from_floats(std::move(data));
+        TensorHandle th;
+        th.source      = std::move(src);
+        th.name        = std::string("residual_post[") + std::to_string(resid_layer) + "]";
+        th.dtype       = DType::F32;
+        th.shape       = {seq, d_model};   // canonical [seq, d_model]
+        th.stride      = {};
+        th.byte_offset = 0;
+        th.byte_length = n_elem * sizeof(float);
+        th.contiguous  = true;
+
+        cap->bundle->residual_post[resid_layer] = std::move(th);
+        return true;
+    }
+
+    // Otherwise: attention.
+    int layer = attn_layer;
 
     // Tensor is ready.  Shape: ggml stores dimensions as ne[0..3].
     // For kq_soft_max the layout is [seq_k, seq_q, n_heads, ...] in ggml
@@ -230,6 +278,30 @@ void llama_cpp_run_capture(
         e.msg = "llama_decode returned " + std::to_string(ret)
               + " (non-fatal; captures may be partial)";
         out_logs.push_back(std::move(e));
+    }
+
+    // ── Post-decode logits capture ───────────────────────────────────────
+    // llama_get_logits returns a pointer to the logits buffer for the last
+    // decoded position(s).  Vocab dim comes from the model.  Stash into
+    // CaptureBundle::logits as an InMemoryTensorSource-backed handle so
+    // getOutputLogits() can read it via the substrate's read_slice API.
+    if (cap_ctx && cap_ctx->bundle && ret == 0) {
+        const llama_vocab* vocab = llama_model_get_vocab(lm);
+        const int n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 0;
+        const float* logits_ptr = llama_get_logits(tmp_ctx);
+        if (logits_ptr && n_vocab > 0) {
+            std::vector<float> data(logits_ptr, logits_ptr + n_vocab);
+            auto src = InMemoryTensorSource::from_floats(std::move(data));
+            TensorHandle th;
+            th.source      = std::move(src);
+            th.name        = "logits";
+            th.dtype       = DType::F32;
+            th.shape       = {1, n_vocab};  // [last_seq=1, vocab]
+            th.byte_offset = 0;
+            th.byte_length = static_cast<std::size_t>(n_vocab) * sizeof(float);
+            th.contiguous  = true;
+            cap_ctx->bundle->logits = std::move(th);
+        }
     }
 
     llama_free(tmp_ctx);
