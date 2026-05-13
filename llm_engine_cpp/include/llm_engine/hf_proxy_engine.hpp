@@ -42,10 +42,11 @@ public:
     HFProxyEngine(const HFProxyEngine&)            = delete;
     HFProxyEngine& operator=(const HFProxyEngine&) = delete;
 
-    // ── Wired Phase 1 hooks ───────────────────────────────────────────────
+    // ── Wired hooks ───────────────────────────────────────────────────────
     CheckpointResult       loadCheckpoint  (std::string_view path) override;
     void                   unloadCheckpoint()                      override;
     std::vector<LogEntry>  drainEngineLogs ()                      override;
+    ModelInfo              getModelInfo    ()                      override;
 
 private:
     struct Impl;

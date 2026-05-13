@@ -39,8 +39,9 @@ std::int64_t now_ms() {
 struct HFProxyEngine::Impl {
     std::string           base_url;
     httplib::Client       client;
-    std::mutex            mu;
+    std::mutex            mu;                      // guards pending_logs + info
     std::vector<LogEntry> pending_logs;
+    ModelInfo             info;                    // populated post-loadCheckpoint
 
     explicit Impl(std::string url)
         : base_url(std::move(url)), client(base_url) {
@@ -57,6 +58,58 @@ struct HFProxyEngine::Impl {
         pending_logs.push_back({now_ms(), sev, kind, std::move(msg)});
     }
 };
+
+namespace {
+
+// Pull an int / float / string out of a JSON object, returning the engine
+// sentinel when the key is missing or null.  The backend uses null for
+// many optional fields (e.g. rope_theta on models without rotary embeddings)
+// — we want those to render as "—" not 0.
+int json_int(const json& j, const char* key, int fallback = kNoInt) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<int>();
+}
+std::int64_t json_i64(const json& j, const char* key, std::int64_t fallback = kNoSize) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<std::int64_t>();
+}
+float json_float(const json& j, const char* key, float fallback = kNoFloat) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return fallback;
+    return it->get<float>();
+}
+std::string json_string(const json& j, const char* key) {
+    auto it = j.find(key);
+    if (it == j.end() || it->is_null()) return {};
+    return it->get<std::string>();
+}
+
+// Translate a SessionInfoResponse JSON into engine-side ModelInfo.  Field
+// names are normalised: num_layers → nLayers, hidden_size → dModel, etc.
+// dHead is derived (hidden_size / num_heads) since the backend doesn't
+// emit it directly.
+ModelInfo parseSessionInfo(const json& j, const std::string& display_name) {
+    ModelInfo m;
+    m.name         = display_name;
+    m.nLayers      = json_int   (j, "num_layers");
+    m.nHeads       = json_int   (j, "num_heads");
+    m.nKvHeads     = json_int   (j, "num_kv_heads", m.nHeads);
+    m.dModel       = json_int   (j, "hidden_size");
+    m.dMlp         = json_int   (j, "intermediate_size");
+    m.vocab        = json_int   (j, "vocab_size");
+    m.maxPos       = json_int   (j, "max_position_embeddings");
+    m.ropeTheta    = json_float (j, "rope_theta");
+    m.totalParams  = json_i64   (j, "total_params");
+    m.chatTemplate = json_string(j, "chat_template");
+    m.bosToken     = json_string(j, "bos_token");
+    m.eosToken     = json_string(j, "eos_token");
+    if (m.nHeads > 0 && m.dModel > 0) m.dHead = m.dModel / m.nHeads;
+    return m;
+}
+
+}  // namespace
 
 HFProxyEngine::HFProxyEngine(std::string base_url)
     : m_impl(std::make_unique<Impl>(std::move(base_url))) {
@@ -111,12 +164,42 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                 "loaded session '" + std::string(kSessionName) +
                 "' model=" + model_id);
 
-    // Phase 2: GET /api/sessions/{name}/info and cache as a translated
-    // ModelInfo so getModelInfo can return real layer counts / hidden size.
+    // Cache the full session info so getModelInfo() returns real layer
+    // counts / hidden size etc. without an extra round-trip per query.
+    {
+        const std::string info_path =
+            std::string("/api/sessions/") + kSessionName + "/info";
+        auto info_res = m_impl->client.Get(info_path.c_str());
+        if (info_res && info_res->status == 200) {
+            try {
+                ModelInfo parsed = parseSessionInfo(
+                    json::parse(info_res->body), model_id);
+                std::lock_guard<std::mutex> lk(m_impl->mu);
+                m_impl->info = std::move(parsed);
+                m_impl->log(Severity::Info, "hf",
+                            "topology: " + std::to_string(m_impl->info.nLayers) +
+                            " layers · " + std::to_string(m_impl->info.nHeads) +
+                            " heads · d_model=" +
+                            std::to_string(m_impl->info.dModel));
+            } catch (const std::exception& e) {
+                m_impl->log(Severity::Warn, "hf",
+                            std::string("session/info parse failed: ") + e.what());
+            }
+        } else {
+            const std::string status =
+                info_res ? std::to_string(info_res->status) : "no-response";
+            m_impl->log(Severity::Warn, "hf",
+                        "session/info GET failed (status=" + status + ")");
+        }
+    }
     return {true, ""};
 }
 
 void HFProxyEngine::unloadCheckpoint() {
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->info = {};
+    }
     const std::string del_path = std::string("/api/sessions/") + kSessionName;
     auto res = m_impl->client.Delete(del_path.c_str());
     if (!res) {
@@ -140,6 +223,11 @@ std::vector<LogEntry> HFProxyEngine::drainEngineLogs() {
     std::vector<LogEntry> out;
     out.swap(m_impl->pending_logs);
     return out;
+}
+
+ModelInfo HFProxyEngine::getModelInfo() {
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    return m_impl->info;
 }
 
 }  // namespace llmengine

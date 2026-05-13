@@ -80,16 +80,9 @@ using llmengine::DatasetDistribution;
 // Engine runtime
 using llmengine::EngineMetrics;
 using llmengine::ExportEntry;
-
-struct ModelInfo {
-    std::string name;
-    int nLayers;
-    int nHeads;
-    int dModel;
-    int dHead;
-    int dMlp;
-    int vocab;
-};
+// Topology — promoted from the engine; gui_cpp's previous local
+// `struct ModelInfo` was a strict subset of llmengine::ModelInfo.
+using llmengine::ModelInfo;
 
 enum class Workspace : int {
     Arch = 0, Inf, Attn, Probes, Train, Ft, Data, Raw, Logs, Count

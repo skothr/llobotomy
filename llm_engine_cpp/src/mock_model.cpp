@@ -35,6 +35,31 @@ std::uint32_t hashString(std::string_view s) {
 // Architecture / weights
 // ──────────────────────────────────────────────────────────────────────────
 
+ModelInfo MockModel::getModelInfo() {
+#if LLOB_USE_MOCK_DATA
+    // TinyLlama-shaped fixture so the architecture workspace lights up
+    // with realistic counts in screenshots / dev iteration.
+    return ModelInfo{
+        .name        = "mock/tinyllama-1.1b",
+        .nLayers     = 22,
+        .nHeads      = 32,
+        .nKvHeads    = 4,
+        .dModel      = 2048,
+        .dHead       = 64,
+        .dMlp        = 5632,
+        .vocab       = 32000,
+        .maxPos      = 2048,
+        .ropeTheta   = 10000.0f,
+        .totalParams = 1100048384,
+        .chatTemplate = "<|user|>\n{prompt}</s>\n<|assistant|>\n",
+        .bosToken    = "<s>",
+        .eosToken    = "</s>",
+    };
+#else
+    return ModelInfo{};
+#endif
+}
+
 std::vector<ParamBreakdownRow> MockModel::getParamBreakdown([[maybe_unused]] int layer) {
 #if LLOB_USE_MOCK_DATA
     return {

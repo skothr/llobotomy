@@ -57,6 +57,32 @@ enum class HeadBias { Diag, Prev, First, Broad, Induction };
 // Architecture / weights — checkpoint-static (mostly)
 // ──────────────────────────────────────────────────────────────────────────
 
+// Topology of the loaded checkpoint.  Returned by Model::getModelInfo()
+// after loadCheckpoint() succeeds; populated from the backend's session-info
+// endpoint or a header-parse for native backends.  Field names match the
+// gui_cpp consumer's existing AppState layout so workspace code can keep
+// reading `s.model.nLayers` etc. without churn.
+//
+// Optional fields default to `kNo…` sentinels when the backend doesn't
+// expose them — e.g. Ollama / GGUF backends may not surface a chat
+// template, max_position_embeddings, or rope theta.
+struct ModelInfo {
+    std::string  name;                              // model_id or path label
+    int          nLayers       = kNoInt;
+    int          nHeads        = kNoInt;
+    int          nKvHeads      = kNoInt;            // grouped-query attn (None ⇒ == nHeads)
+    int          dModel        = kNoInt;            // hidden_size
+    int          dHead         = kNoInt;            // dModel / nHeads
+    int          dMlp          = kNoInt;            // intermediate_size
+    int          vocab         = kNoInt;
+    int          maxPos        = kNoInt;            // max_position_embeddings
+    float        ropeTheta     = kNoFloat;
+    std::int64_t totalParams   = kNoSize;
+    std::string  chatTemplate;                      // Jinja-like; "" if none
+    std::string  bosToken;                          // "" if none
+    std::string  eosToken;                          // "" if none
+};
+
 struct ParamBreakdownRow {
     std::string component;     // "W_Q + W_K + W_V"
     float       params_M;      // millions
@@ -387,6 +413,13 @@ struct Model {
     virtual ~Model() = default;
 
     // ── Architecture ──────────────────────────────────────────────────────
+    // Topology of the loaded checkpoint.  Backends populate this from
+    // their loadCheckpoint pipeline (config + tokenizer + weights metadata).
+    // Default returns an all-sentinel ModelInfo so a backend that doesn't
+    // implement it doesn't break the UI — the architecture workspace just
+    // shows "—" everywhere.
+    virtual ModelInfo getModelInfo() { return {}; }
+
     virtual std::vector<ParamBreakdownRow> getParamBreakdown(int layer) = 0;
     virtual LiveActivations                getLiveActivations(int layer) = 0;
 
@@ -513,6 +546,7 @@ struct Model {
 // UI either has a real backend wired up or it shows blank panels.
 struct MockModel : Model {
 #define DECL_OVERRIDE(ret, sig) ret sig override
+    DECL_OVERRIDE(ModelInfo,                      getModelInfo());
     DECL_OVERRIDE(std::vector<ParamBreakdownRow>, getParamBreakdown(int layer));
     DECL_OVERRIDE(LiveActivations,                getLiveActivations(int layer));
     DECL_OVERRIDE(std::vector<std::vector<float>>,
