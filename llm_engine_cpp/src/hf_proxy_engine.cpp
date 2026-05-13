@@ -259,6 +259,22 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                     .content_hash = "",
                     .source_label = "HuggingFace via FastAPI (" + m_impl->base_url + ")",
                 };
+                // Capability mirror for the path API.  Phase 1: only
+                // topology + log fan-in are wired; subsequent phases
+                // flip more bits as endpoints are wired.
+                m_impl->view.capabilities = Capabilities{
+                    .has_topology      = true,
+                    .has_tokenizer     = false,
+                    .has_state_dict    = false,
+                    .has_attention     = false,
+                    .has_residual      = false,
+                    .has_logit_lens    = false,
+                    .has_token_stream  = false,
+                    .has_captures      = false,
+                    .has_intervention  = false,
+                    .has_weight_deltas = false,
+                    .has_training      = false,
+                };
                 m_impl->log(Severity::Info, "hf",
                             "topology: " + std::to_string(m_impl->view.topology.nLayers) +
                             " layers · " + std::to_string(m_impl->view.topology.nHeads) +
@@ -328,20 +344,11 @@ const ModelView& HFProxyEngine::view() const {
 Model::Capabilities HFProxyEngine::getCapabilities() const {
     // Phase 1: we own the topology + log fan-in only.  Subsequent phases
     // light up attention / residual / captures / intervention as their
-    // FastAPI endpoints get wired through.
-    return Capabilities{
-        .has_topology      = true,
-        .has_tokenizer     = false,   // Phase 2 wires /tokenize → TokenizerView.encode/decode
-        .has_state_dict    = false,
-        .has_attention     = false,   // Phase 2
-        .has_residual      = false,   // Phase 2
-        .has_logit_lens    = false,   // Phase 4 (WS stream)
-        .has_token_stream  = false,   // Phase 4
-        .has_captures      = false,   // Phase 2 — capture endpoint not wired yet
-        .has_intervention  = false,   // Phase 3
-        .has_weight_deltas = false,
-        .has_training      = false,   // out of scope for HF backend
-    };
+    // FastAPI endpoints get wired through.  Mirror is also written into
+    // view.capabilities at loadCheckpoint so path-API consumers can
+    // resolve `capabilities/has_X` without going through the virtual.
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    return m_impl->view.capabilities;
 }
 
 EngineMetrics HFProxyEngine::getEngineMetrics() {

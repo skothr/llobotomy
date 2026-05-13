@@ -72,6 +72,68 @@ int main() {
         assert(std::holds_alternative<std::monostate>(got));
     }
 
+    // Capabilities bool resolution.
+    v.capabilities.has_topology  = true;
+    v.capabilities.has_attention = false;
+    {
+        auto got = v.get("capabilities/has_topology");
+        assert(std::holds_alternative<bool>(got));
+        assert(std::get<bool>(got) == true);
+    }
+    {
+        auto got = v.get("capabilities/has_attention");
+        assert(std::holds_alternative<bool>(got));
+        assert(std::get<bool>(got) == false);
+    }
+
+    // surgery/ablations and surgery/components return canonical-name
+    // lists derived from the structured InterventionSet storage.
+    v.surgery.ablated_heads.push_back({5, 3});
+    v.surgery.ablated_heads.push_back({7, 11});
+    v.surgery.ablated_components.push_back({4, "mlp"});
+    {
+        auto got = v.get("surgery/ablations");
+        assert(std::holds_alternative<std::vector<std::string>>(got));
+        const auto& names = std::get<std::vector<std::string>>(got);
+        assert(names.size() == 2);
+        assert(names[0] == "blocks.5.attn.head.3");
+        assert(names[1] == "blocks.7.attn.head.11");
+    }
+    {
+        auto got = v.get("surgery/components");
+        assert(std::holds_alternative<std::vector<std::string>>(got));
+        const auto& names = std::get<std::vector<std::string>>(got);
+        assert(names.size() == 1);
+        assert(names[0] == "blocks.4.mlp");
+    }
+
+    // Ref roundtrip: canonical → parse → canonical.
+    {
+        AttentionHeadRef h{12, 7};
+        const auto str = h.canonical();
+        assert(str == "blocks.12.attn.head.7");
+        auto parsed = AttentionHeadRef::parse(str);
+        assert(parsed.has_value());
+        assert(*parsed == h);
+    }
+    {
+        ComponentRef c{3, "resid_post"};
+        const auto str = c.canonical();
+        assert(str == "blocks.3.resid_post");
+        auto parsed = ComponentRef::parse(str);
+        assert(parsed.has_value());
+        assert(*parsed == c);
+    }
+    // Malformed inputs return nullopt.
+    assert(!AttentionHeadRef::parse("blocks.foo.attn.head.3").has_value());
+    assert(!AttentionHeadRef::parse("blocks.5.attn.head.").has_value());
+    assert(!AttentionHeadRef::parse("blocks.5.mlp").has_value());
+    assert(!ComponentRef::parse("").has_value());
+    assert(!ComponentRef::parse("blocks.foo.mlp").has_value());
+    // ComponentRef should also refuse a head-shaped string (the head
+    // component has internal dots, which ComponentRef::parse rejects).
+    assert(!ComponentRef::parse("blocks.5.attn.head.3").has_value());
+
     // clear() resets everything to default.  After clear, scalar
     // getters return sentinels and tensor registry is empty.
     v.clear();

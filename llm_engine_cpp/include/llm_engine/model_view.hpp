@@ -66,6 +66,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -87,32 +88,73 @@ struct Provenance {
 // plug in whatever runtime tokenizer it owns (HF tokenizers, sentencepiece,
 // llama.cpp's, etc.) without leaking the implementation. Empty by default
 // — backends that don't expose a tokenizer leave them unset; consumers
-// must check operator bool() before calling.
+// must check has_encode() / has_decode() before calling.
 struct TokenizerView {
     std::vector<std::string> id_to_token;     // lazy: empty until first need
     std::string              bos_token, eos_token, pad_token;
     std::string              chat_template;
     std::function<std::vector<TokenId>(std::string_view)> encode;
     std::function<std::string(TokenId)>                   decode;
+
+    bool has_encode() const { return static_cast<bool>(encode); }
+    bool has_decode() const { return static_cast<bool>(decode); }
 };
 
-// One ablation / probe attachment. Names use canonical paths so they
-// can reference TensorRegistry entries directly.
-struct AblationEntry {
-    std::string name;          // "blocks.5.attn.head.3" or "blocks.7.mlp"
+// ─── Structured intervention targets ─────────────────────────────────
+//
+// The substrate identifies what's being intervened on with strongly-
+// typed refs instead of bare strings.  Each ref carries layer/head/
+// component as integers + canonical()/parse() bridges to a stable
+// canonical-path string scheme that path APIs (Value get) and storage
+// (DerivedCache, serialisation) can share unambiguously.
+//
+// Path scheme:
+//   AttentionHeadRef → "blocks.{layer}.attn.head.{head}"
+//   ComponentRef     → "blocks.{layer}.{component}"
+//                      component ∈ {"attn", "mlp", "ln1", "ln2",
+//                                   "resid_pre", "resid_post", "mlp_post"}
+//
+// parse() returns std::nullopt on malformed input; canonical() always
+// produces a path that round-trips through parse().
+struct AttentionHeadRef {
+    int layer = -1;
+    int head  = -1;
+
+    std::string canonical() const;
+    static std::optional<AttentionHeadRef> parse(std::string_view canonical);
+
+    bool operator==(const AttentionHeadRef&) const = default;
 };
+
+struct ComponentRef {
+    int         layer = -1;
+    std::string component;        // "attn" | "mlp" | "ln1" | ...
+
+    std::string canonical() const;
+    static std::optional<ComponentRef> parse(std::string_view canonical);
+
+    bool operator==(const ComponentRef&) const = default;
+};
+
 struct ProbeAttachment {
-    std::string name;
-    std::string location;      // "L08.resid_post"
-    std::string kind;          // "linear" / "SAE" / ...
+    std::string  name;            // probe's own name, e.g. "linear/refusal_dir"
+    ComponentRef location;        // where it's attached
+    std::string  kind;            // "linear" | "SAE" | "logit" / ...
 };
 
 struct InterventionSet {
-    std::vector<AblationEntry>   ablated_heads;
-    std::vector<AblationEntry>   ablated_components;
-    SteeringConfig               steering;
-    std::vector<ProbeAttachment> probes;
+    std::vector<AttentionHeadRef> ablated_heads;
+    std::vector<ComponentRef>     ablated_components;
+    SteeringConfig                steering;
+    std::vector<ProbeAttachment>  probes;
     std::unordered_map<std::string, TensorHandle> weight_deltas;
+
+    // Convenience accessors for path-API consumers — return the
+    // canonical-name list (typed callers prefer the structured fields
+    // above).  Each call materialises a fresh vector; cheap enough for
+    // the path API's escape-hatch role.
+    std::vector<std::string> ablated_head_names() const;
+    std::vector<std::string> ablated_component_names() const;
 };
 
 struct ModelView {
@@ -131,13 +173,24 @@ struct ModelView {
 
     // Path-based escape hatch. Returns monostate on unknown / unsupported
     // paths. See model_view.cpp for the path grammar.
+    //
+    // Alternatives are append-only per the substrate's ABI policy.
+    // Adding a type is forward-compat for consumers (they handle the
+    // new variant arm or fall into monostate via std::visit's default);
+    // re-ordering is a major-version break.
     using Value = std::variant<
         std::monostate,
-        int, float, std::int64_t, std::string,
+        bool, int, float, std::int64_t, std::string,
         TensorHandle, ResidualSummary, SteeringConfig,
+        std::vector<std::string>,
         std::vector<LogitLensRow>, TensorStats
     >;
     Value get(std::string_view path) const;
+
+    // Capabilities snapshot — set by the owning Model.  Wired by the
+    // Model::view() implementation post-load so the path API can resolve
+    // `capabilities/has_X`.  Default-constructed (all false) until then.
+    Model::Capabilities capabilities;
 
     // Reset every field to default.  Called by Model::unloadCheckpoint
     // to guarantee a fresh session never inherits state from a prior

@@ -593,8 +593,21 @@ struct Model {
     //   setSteering /
     //   clearSteering   — install / remove a steering vector.
     virtual void setActivePrompt([[maybe_unused]] std::string_view prompt) {}
-    virtual void setAblation    ([[maybe_unused]] std::vector<std::string> heads,
-                                 [[maybe_unused]] std::vector<std::string> components) {}
+
+    // setAblation takes the full set of ablation targets — heads +
+    // components.  Names are canonical-path strings; structured
+    // refs (AttentionHeadRef / ComponentRef in model_view.hpp) have
+    // canonical() helpers that produce these strings, so a typed caller
+    // can do `setAblation({h.canonical()}, {})`.
+    //
+    // String form is the wire format for two reasons: (a) RPC / scripting
+    // callers don't carry the ref types, (b) model.hpp forward-declares
+    // ModelView and pulling the ref types in here would invert the
+    // header layering.  Backends parse / validate the strings themselves
+    // (typically via AttentionHeadRef::parse — returns nullopt on
+    // malformed input, which the backend logs and skips).
+    virtual void setAblation    ([[maybe_unused]] const std::vector<std::string>& head_canonical,
+                                 [[maybe_unused]] const std::vector<std::string>& component_canonical) {}
     virtual void setSteering    ([[maybe_unused]] const SteeringConfig&   cfg) {}
     virtual void clearSteering  () {}
 

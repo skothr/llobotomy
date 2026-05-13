@@ -55,11 +55,30 @@ int main() {
     assert(first.size() == 8);
     assert(first == again);
 
-    // New capability bits must be set consistently — has_tokenizer false
-    // (MockModel doesn't expose encode/decode), has_captures true
-    // (per-DTO getters return mock activations).
+    // New capability bits must be set consistently — has_tokenizer
+    // becomes true once MockModel wires encode/decode into TokenizerView.
     assert(caps.has_captures);
-    assert(!caps.has_tokenizer);
+    assert(caps.has_tokenizer);
+
+    // Capability mirror — view.capabilities matches getCapabilities().
+    assert(v.capabilities.has_tokenizer == caps.has_tokenizer);
+    assert(v.capabilities.has_captures  == caps.has_captures);
+
+    // TokenizerView wired end-to-end: encode is callable, decode is
+    // callable, round-trips deterministically.  Substrate validates the
+    // std::function-based ABI a real backend will use.
+    assert(v.tokenizer.has_encode());
+    assert(v.tokenizer.has_decode());
+    const auto ids = v.tokenizer.encode("hello world hello");
+    assert(ids.size() == 3);
+    assert(ids[0] == ids[2]);    // same word → same id (stable hash)
+    assert(ids[0] != ids[1]);    // different word → different id
+
+    // decode of an unknown id falls through to the "tok_N" form; special
+    // ids (1, 2) decode to BOS/EOS.
+    assert(v.tokenizer.decode(1) == "<s>");
+    assert(v.tokenizer.decode(2) == "</s>");
+    assert(v.tokenizer.decode(999).rfind("tok_", 0) == 0);
 
     // No long-running work in flight: getProgress() returns idle.
     auto p = m.getProgress();

@@ -86,6 +86,42 @@ void populateMockTensors(TensorRegistry& reg) {
     add("lm_head.weight", {kVocab, kDModel}, DType::F16);
 }
 
+// MockModel tokenizer — deterministic word-level split for encode, "tok_N"
+// string for decode.  Doesn't pretend to be a real BPE; the point is that
+// the substrate's encode/decode slots are wired end-to-end with the same
+// std::function-based ABI a real tokenizer (HF tokenizers, sentencepiece,
+// llama.cpp) will use.  A test verifies encode → decode round-trip.
+std::vector<TokenId> mock_encode(std::string_view text) {
+    std::vector<TokenId> out;
+    // Whitespace-split + a tiny hash → TokenId.  Each unique word gets
+    // a stable id (the hash is deterministic) but collisions are
+    // possible — fine for a mock; surfaces the API shape, not vocab.
+    std::size_t i = 0;
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i >= text.size()) break;
+        std::size_t j = i;
+        while (j < text.size() && !std::isspace(static_cast<unsigned char>(text[j]))) ++j;
+        std::uint32_t h = 2166136261u;
+        for (std::size_t k = i; k < j; ++k) {
+            h ^= static_cast<std::uint8_t>(text[k]);
+            h *= 16777619u;
+        }
+        // Clamp into mock vocab range (32000) so ids look plausible.
+        out.push_back(static_cast<TokenId>(h % 32000u));
+        i = j;
+    }
+    return out;
+}
+
+std::string mock_decode(TokenId id) {
+    // Two special-cased ids — match topology.bosToken / eosToken so a
+    // round-trip across "<s>" hits the BOS path.
+    if (id == 1) return "<s>";
+    if (id == 2) return "</s>";
+    return "tok_" + std::to_string(id);
+}
+
 void populateMockView(ModelView& v) {
     v.provenance = {
         .path         = "mock://tinyllama-1.1b",
@@ -110,6 +146,34 @@ void populateMockView(ModelView& v) {
         .eosToken     = "</s>",
     };
     populateMockTensors(v.tensors);
+
+    // Tokenizer surface — wires the std::function slots that real
+    // backends fill from their runtime tokenizer.  Same shape as the
+    // HF / sentencepiece / llama.cpp wiring; just synthetic.
+    v.tokenizer.bos_token     = "<s>";
+    v.tokenizer.eos_token     = "</s>";
+    v.tokenizer.pad_token     = "<pad>";
+    v.tokenizer.chat_template = v.topology.chatTemplate;
+    v.tokenizer.encode        = mock_encode;
+    v.tokenizer.decode        = mock_decode;
+
+    // Capability snapshot for the path API (`capabilities/has_X`).  The
+    // virtual getCapabilities() retains its independent answer; this
+    // mirror exists so path-API consumers don't need a Model* — only the
+    // ModelView reference.
+    v.capabilities = Model::Capabilities{
+        .has_topology      = true,
+        .has_tokenizer     = true,
+        .has_state_dict    = true,
+        .has_attention     = true,
+        .has_residual      = true,
+        .has_logit_lens    = true,
+        .has_token_stream  = false,
+        .has_captures      = true,
+        .has_intervention  = false,
+        .has_weight_deltas = false,
+        .has_training      = true,
+    };
 }
 #endif  // LLOB_USE_MOCK_DATA
 
@@ -129,19 +193,10 @@ const ModelView& MockModel::view() const {
 
 Model::Capabilities MockModel::getCapabilities() const {
 #if LLOB_USE_MOCK_DATA
-    return Capabilities{
-        .has_topology      = true,
-        .has_tokenizer     = false,    // MockModel exposes vocab via getCurrentTokens, not encode/decode
-        .has_state_dict    = true,
-        .has_attention     = true,
-        .has_residual      = true,
-        .has_logit_lens    = true,
-        .has_token_stream  = false,
-        .has_captures      = true,     // every per-DTO getter returns mock activations
-        .has_intervention  = false,    // setAblation/setSteering are no-ops in mock
-        .has_weight_deltas = false,
-        .has_training      = true,     // mock loss curves only
-    };
+    // Mirror of the populated view.capabilities — kept in sync at
+    // construction time.  The virtual getter exists for callers that
+    // hold a `Model&` without going through view().
+    return m_state->view.capabilities;
 #else
     return {};
 #endif
