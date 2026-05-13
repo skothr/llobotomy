@@ -1,4 +1,5 @@
 #include "llm_engine/hf_proxy_engine.hpp"
+#include "llm_engine/model_view.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -58,7 +59,12 @@ struct HFProxyEngine::Impl {
     httplib::Client       worker_client;
     std::mutex            mu;                      // guards everything below
     std::vector<LogEntry> pending_logs;
-    ModelInfo             info;                    // populated post-loadCheckpoint
+    // Unified data structure.  loadCheckpoint populates view.provenance +
+    // view.topology; unloadCheckpoint resets them.  Future phases write
+    // captures + surgery into the same struct.  view() returns a const
+    // reference; concurrent backend writes happen under `mu`, concurrent
+    // UI reads accept eventual consistency for the scalar fields.
+    ModelView             view;
     bool                  backend_live = false;    // last heartbeat result
     std::int64_t          last_contact_ms = 0;     // 0 ⇒ never reached
 
@@ -246,12 +252,18 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                 ModelInfo parsed = parseSessionInfo(
                     json::parse(info_res->body), model_id);
                 std::lock_guard<std::mutex> lk(m_impl->mu);
-                m_impl->info = std::move(parsed);
+                m_impl->view.topology   = std::move(parsed);
+                m_impl->view.provenance = {
+                    .path         = model_id,
+                    .format       = "hf-proxy",
+                    .content_hash = "",
+                    .source_label = "HuggingFace via FastAPI (" + m_impl->base_url + ")",
+                };
                 m_impl->log(Severity::Info, "hf",
-                            "topology: " + std::to_string(m_impl->info.nLayers) +
-                            " layers · " + std::to_string(m_impl->info.nHeads) +
+                            "topology: " + std::to_string(m_impl->view.topology.nLayers) +
+                            " layers · " + std::to_string(m_impl->view.topology.nHeads) +
                             " heads · d_model=" +
-                            std::to_string(m_impl->info.dModel));
+                            std::to_string(m_impl->view.topology.dModel));
             } catch (const std::exception& e) {
                 m_impl->log(Severity::Warn, "hf",
                             std::string("session/info parse failed: ") + e.what());
@@ -269,7 +281,9 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
 void HFProxyEngine::unloadCheckpoint() {
     {
         std::lock_guard<std::mutex> lk(m_impl->mu);
-        m_impl->info = {};
+        m_impl->view.topology   = {};
+        m_impl->view.provenance = {};
+        m_impl->view.tensors    = {};
     }
     const std::string del_path = std::string("/api/sessions/") + kSessionName;
     auto res = m_impl->client.Delete(del_path.c_str());
@@ -298,16 +312,41 @@ std::vector<LogEntry> HFProxyEngine::drainEngineLogs() {
 
 ModelInfo HFProxyEngine::getModelInfo() {
     std::lock_guard<std::mutex> lk(m_impl->mu);
-    return m_impl->info;
+    return m_impl->view.topology;
+}
+
+const ModelView& HFProxyEngine::view() const {
+    // No lock here — ModelView reads happen at frame rate.  Topology and
+    // provenance are scalar fields whose torn reads still produce sane
+    // values (the most you'll see during a swap is one stale scalar for
+    // a single frame).  Anything that needs strict atomicity (the
+    // capture pointer in `view.current`) lives behind its own atomic.
+    return m_impl->view;
+}
+
+Model::Capabilities HFProxyEngine::getCapabilities() const {
+    // Phase 1: we own the topology + log fan-in only.  Subsequent phases
+    // light up attention / residual / token stream / intervention as
+    // their FastAPI endpoints get wired through.
+    return Capabilities{
+        .has_topology     = true,
+        .has_state_dict   = false,
+        .has_attention    = false,
+        .has_residual     = false,
+        .has_logit_lens   = false,
+        .has_token_stream = false,
+        .has_intervention = false,
+        .has_training     = false,
+    };
 }
 
 EngineMetrics HFProxyEngine::getEngineMetrics() {
     EngineMetrics m;
     std::lock_guard<std::mutex> lk(m_impl->mu);
     if (m_impl->backend_live) {
-        if (m_impl->info.nLayers > 0) {
+        if (m_impl->view.topology.nLayers > 0) {
             // Loaded checkpoint — render as "hf · <model_id>".
-            m.device = "hf · " + m_impl->info.name;
+            m.device = "hf · " + m_impl->view.topology.name;
         } else {
             m.device = "hf · idle";
         }

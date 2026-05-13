@@ -5,6 +5,9 @@
 // model.hpp, and the UI shows "no data" placeholders instead.
 
 #include "llm_engine/model.hpp"
+#include "llm_engine/model_view.hpp"
+#include "llm_engine/tensor_handle.hpp"
+#include "llm_engine/tensor_source.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -15,6 +18,123 @@
 #include <string>
 
 namespace llmengine {
+
+// ── MockModel::State — holds the ModelView the mock returns ───────────────
+// PIMPL so model.hpp can stay clean of <atomic> / <unordered_map> etc.
+// Construction populates a TinyLlama-shaped topology + a small synthetic
+// TensorRegistry so the raw-tensors workspace has something to enumerate
+// even though every per-method getter still computes its own mock data
+// inline below.  The two paths coexist intentionally: backends migrating
+// to the ModelView substrate can read from m_view while existing UI
+// callers keep hitting the virtual getters.
+struct MockModel::State {
+    ModelView view;
+};
+
+namespace {
+
+#if LLOB_USE_MOCK_DATA
+// Build a synthetic state-dict for a TinyLlama-shaped model.  Names match
+// the existing MockModel::getStateDict() output (which the raw-tensors
+// workspace already renders) so the typed view stays consistent with the
+// per-DTO path.
+void populateMockTensors(TensorRegistry& reg) {
+    auto add = [&](std::string name, std::vector<std::int64_t> shape, DType dt) {
+        std::size_t n = 1;
+        for (auto d : shape) n *= static_cast<std::size_t>(d > 0 ? d : 0);
+        const std::size_t bpe = dtype_element_bytes(dt);
+        TensorHandle h;
+        h.name        = std::move(name);
+        h.dtype       = dt;
+        h.shape       = std::move(shape);
+        h.byte_offset = 0;
+        h.byte_length = n * bpe;
+        // No backing source — read_slice() will return empty.  The
+        // registry exists for enumeration (state_dict list, shape /
+        // dtype hover), not for live byte reads in MockModel.  When a
+        // backend wants real bytes it plugs in an InMemoryTensorSource.
+        reg.insert(std::move(h));
+    };
+    constexpr int kLayers = 22;
+    constexpr int kDModel = 2048;
+    constexpr int kDMlp   = 5632;
+    constexpr int kVocab  = 32000;
+    add("tok_embeddings.weight", {kVocab, kDModel}, DType::F16);
+    for (int L = 0; L < kLayers; ++L) {
+        const std::string p = "blocks." + std::to_string(L) + ".";
+        add(p + "attn.W_Q.weight", {kDModel, kDModel}, DType::F16);
+        add(p + "attn.W_K.weight", {kDModel / 8, kDModel}, DType::F16);
+        add(p + "attn.W_V.weight", {kDModel / 8, kDModel}, DType::F16);
+        add(p + "attn.W_O.weight", {kDModel, kDModel}, DType::F16);
+        add(p + "mlp.W_gate.weight", {kDMlp,   kDModel}, DType::F16);
+        add(p + "mlp.W_up.weight",   {kDMlp,   kDModel}, DType::F16);
+        add(p + "mlp.W_down.weight", {kDModel, kDMlp},   DType::F16);
+        add(p + "ln1.weight", {kDModel}, DType::F16);
+        add(p + "ln2.weight", {kDModel}, DType::F16);
+    }
+    add("ln_f.weight", {kDModel}, DType::F16);
+    add("lm_head.weight", {kVocab, kDModel}, DType::F16);
+}
+
+void populateMockView(ModelView& v) {
+    v.provenance = {
+        .path         = "mock://tinyllama-1.1b",
+        .format       = "mock",
+        .content_hash = "",
+        .source_label = "MockModel (Mulberry32 fixture)",
+    };
+    v.topology = {
+        .name         = "mock/tinyllama-1.1b",
+        .nLayers      = 22,
+        .nHeads       = 32,
+        .nKvHeads     = 4,
+        .dModel       = 2048,
+        .dHead        = 64,
+        .dMlp         = 5632,
+        .vocab        = 32000,
+        .maxPos       = 2048,
+        .ropeTheta    = 10000.0f,
+        .totalParams  = 1100048384,
+        .chatTemplate = "<|user|>\n{prompt}</s>\n<|assistant|>\n",
+        .bosToken     = "<s>",
+        .eosToken     = "</s>",
+    };
+    populateMockTensors(v.tensors);
+}
+#endif  // LLOB_USE_MOCK_DATA
+
+}  // namespace
+
+MockModel::MockModel() : m_state(std::make_unique<State>()) {
+#if LLOB_USE_MOCK_DATA
+    populateMockView(m_state->view);
+#endif
+}
+
+MockModel::~MockModel() = default;
+
+const ModelView& MockModel::view() const {
+    return m_state->view;
+}
+
+Model::Capabilities MockModel::getCapabilities() const {
+#if LLOB_USE_MOCK_DATA
+    return Capabilities{
+        .has_topology     = true,
+        .has_state_dict   = true,
+        .has_attention    = true,
+        .has_residual     = true,
+        .has_logit_lens   = true,
+        .has_token_stream = false,
+        .has_intervention = false,
+        .has_training     = true,    // mock loss curves only
+    };
+#else
+    return {};
+#endif
+}
+
+// ─── existing per-method getters (unchanged from here on) ────────────────
 
 namespace {
 

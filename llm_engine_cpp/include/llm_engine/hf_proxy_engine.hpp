@@ -48,6 +48,8 @@ public:
     std::vector<LogEntry>  drainEngineLogs ()                      override;
     ModelInfo              getModelInfo    ()                      override;
     EngineMetrics          getEngineMetrics()                      override;
+    const ModelView&       view            () const                override;
+    Capabilities           getCapabilities () const                override;
 
 private:
     struct Impl;

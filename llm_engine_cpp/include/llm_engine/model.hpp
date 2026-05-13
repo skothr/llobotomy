@@ -26,11 +26,19 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace llmengine {
+
+// Forward declaration — the unified data structure lives in
+// model_view.hpp (which includes this file to get the DTOs).  Backends
+// own a ModelView and expose it via Model::view(); consumers prefer
+// typed access (`m.view().topology.nLayers`) over the per-DTO getters
+// kept below for source compatibility.
+struct ModelView;
 
 // ── Sentinel values for "no data yet" ─────────────────────────────────────
 inline constexpr float        kNoFloat = std::numeric_limits<float>::quiet_NaN();
@@ -494,6 +502,49 @@ struct Model {
     virtual CheckpointResult loadCheckpoint([[maybe_unused]] std::string_view path) { return {}; }
     virtual void             unloadCheckpoint() {}
 
+    // ── Unified data structure (ModelView) ───────────────────────────────
+    // The canonical accessor. Backends own a ModelView and return it here.
+    // Pure virtual so every backend explicitly commits to a view — even
+    // MockModel's mock-data populator writes into one.  Per-DTO getters
+    // below are kept for source compatibility and prefer reading from
+    // view() where the data is naturally there; backends that prefer to
+    // compute per call still override individual getters.
+    virtual const ModelView& view() const = 0;
+
+    // ── Capabilities advertisement ───────────────────────────────────────
+    // Bit-bag the UI consults to grey out controls a backend can't honour.
+    // Each field is conservative-default-false so a new backend that
+    // forgets to set them simply gets blank panels (preferred to crashing
+    // on a wrong-shaped response).
+    struct Capabilities {
+        bool has_topology     = false;
+        bool has_state_dict   = false;
+        bool has_attention    = false;     // capture-side: live attention matrices
+        bool has_residual     = false;
+        bool has_logit_lens   = false;
+        bool has_token_stream = false;     // live generation
+        bool has_intervention = false;     // setAblation / setSteering honoured
+        bool has_training     = false;
+    };
+    virtual Capabilities getCapabilities() const { return {}; }
+
+    // ── New mutators (ENGINE_API.md §7) ──────────────────────────────────
+    // Default no-op so a backend that doesn't support a hook is silent.
+    //
+    //   setActivePrompt — UI invokes when the inference workspace's
+    //                     prompt commits.  Engine kicks off the capture
+    //                     that populates ModelView::current.
+    //   setAblation     — full set of ablated heads + components.  Called
+    //                     debounced (~200ms) when the UI's ablation set
+    //                     changes; engine masks accordingly.
+    //   setSteering /
+    //   clearSteering   — install / remove a steering vector.
+    virtual void setActivePrompt([[maybe_unused]] std::string_view prompt) {}
+    virtual void setAblation    ([[maybe_unused]] std::vector<std::string> heads,
+                                 [[maybe_unused]] std::vector<std::string> components) {}
+    virtual void setSteering    ([[maybe_unused]] const SteeringConfig&   cfg) {}
+    virtual void clearSteering  () {}
+
     // ── Training workspace ───────────────────────────────────────────────
     virtual TrainingState                   getTrainingState   ()                = 0;
     virtual std::vector<TrainingMetricCard> getTrainingMetrics ()                = 0;
@@ -641,6 +692,22 @@ struct MockModel : Model {
     }
     void saveProbe(std::string_view) override {}
     void exportSnapshot(std::string_view) override {}
+
+    // Unified data structure.  MockModel owns one ModelView; populator
+    // lives in mock_model.cpp (Mulberry32-seeded topology + a synthetic
+    // TensorRegistry that gives the raw-tensors workspace something to
+    // enumerate even before a real backend is wired).
+    const ModelView& view() const override;
+    Capabilities     getCapabilities() const override;
+
+    MockModel();
+    ~MockModel() override;
+    MockModel(const MockModel&)            = delete;
+    MockModel& operator=(const MockModel&) = delete;
+
+private:
+    struct State;
+    std::unique_ptr<State> m_state;
 };
 
 }  // namespace llmengine

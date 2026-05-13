@@ -53,6 +53,10 @@ add_library(llm_engine STATIC
   src/log.cpp
   src/mock_model.cpp
   src/hf_proxy_engine.cpp
+  src/tensor_source.cpp
+  src/tensor_handle.cpp
+  src/derived_cache.cpp
+  src/model_view.cpp
 )
 add_library(llmengine::llm_engine ALIAS llm_engine)
 
@@ -78,4 +82,17 @@ target_link_libraries(llm_engine PUBLIC Threads::Threads)
 # thanks to the SYSTEM keyword on their interface includes.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(llm_engine PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests — only built when this CMakeLists is the top-level project (i.e.
+# someone building llm_engine directly, not consumers add_subdirectory'ing).
+# Keeps gui_cpp's build clean of test binaries.
+# ---------------------------------------------------------------------------
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  option(LLM_ENGINE_BUILD_TESTS "Build llm_engine unit tests" ON)
+  if(LLM_ENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+  endif()
 endif()
