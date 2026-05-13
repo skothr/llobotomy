@@ -420,6 +420,17 @@ struct Model {
     // shows "—" everywhere.
     virtual ModelInfo getModelInfo() { return {}; }
 
+    // Token strings currently being inspected — typically the prompt + any
+    // generated tokens for the active forward pass.  Empty when the
+    // backend has nothing loaded or no active sequence.  Drives the
+    // inference workspace's token strip and the activeToken cursor.
+    //
+    // For backends that own generation (FastAPI proxy via /generate WS),
+    // these are the streamed tokens; for static-prompt inspection
+    // (libtorch / llama.cpp paths) these come from tokenizing the prompt
+    // and decoding each id.  Default returns empty.
+    virtual std::vector<std::string> getCurrentTokens() { return {}; }
+
     virtual std::vector<ParamBreakdownRow> getParamBreakdown(int layer) = 0;
     virtual LiveActivations                getLiveActivations(int layer) = 0;
 
@@ -547,6 +558,7 @@ struct Model {
 struct MockModel : Model {
 #define DECL_OVERRIDE(ret, sig) ret sig override
     DECL_OVERRIDE(ModelInfo,                      getModelInfo());
+    DECL_OVERRIDE(std::vector<std::string>,       getCurrentTokens());
     DECL_OVERRIDE(std::vector<ParamBreakdownRow>, getParamBreakdown(int layer));
     DECL_OVERRIDE(LiveActivations,                getLiveActivations(int layer));
     DECL_OVERRIDE(std::vector<std::vector<float>>,

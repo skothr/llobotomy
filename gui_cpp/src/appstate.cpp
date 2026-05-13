@@ -125,17 +125,20 @@ void AppState::seedSession() {
 }
 
 void AppState::loadFromModel(Model& m) {
-    // Engine populates ModelInfo from the current checkpoint (or returns
-    // an all-sentinel struct when nothing is loaded).  Only overwrite if
-    // the engine returned real data — that way mock-ON dev builds where
-    // seedMockData() ran first still show seeded numbers when a real
-    // backend has nothing loaded yet.
+    // Engine populates ModelInfo + currentTokens from the active
+    // checkpoint (or returns sentinel struct / empty vector when nothing
+    // is loaded).  Only overwrite if the engine returned real data — that
+    // way mock-ON builds where seedMockData() planted defaults first
+    // continue showing those defaults if the real backend has nothing
+    // loaded yet.
     auto info = m.getModelInfo();
     if (info.nLayers > 0) {
         model = std::move(info);
     }
-    // sampleTokens still seeded by seedMockData() in mock-ON; real-token
-    // population from the backend lands with getCurrentTokens (Phase 2B).
+    auto toks = m.getCurrentTokens();
+    if (!toks.empty()) {
+        sampleTokens = std::move(toks);
+    }
 }
 
 // ── Demo seed (mock-only) ────────────────────────────────────────────────

@@ -35,6 +35,24 @@ std::uint32_t hashString(std::string_view s) {
 // Architecture / weights
 // ──────────────────────────────────────────────────────────────────────────
 
+std::vector<std::string> MockModel::getCurrentTokens() {
+#if LLOB_USE_MOCK_DATA
+    // Sample sentence with SentencePiece-style space-prefix tokens — what
+    // the inference workspace's token strip displayed before this hook
+    // existed (was hardcoded at the gui_cpp seed-data site).
+    return {
+        "<bos>", "\xE2\x96\x81When", "\xE2\x96\x81the", "\xE2\x96\x81transformer",
+        "\xE2\x96\x81processes", "\xE2\x96\x81a", "\xE2\x96\x81sentence", ",",
+        "\xE2\x96\x81each", "\xE2\x96\x81attention", "\xE2\x96\x81head",
+        "\xE2\x96\x81attends", "\xE2\x96\x81to", "\xE2\x96\x81a",
+        "\xE2\x96\x81subset", "\xE2\x96\x81of", "\xE2\x96\x81the",
+        "\xE2\x96\x81previous", "\xE2\x96\x81tokens", ".",
+    };
+#else
+    return {};
+#endif
+}
+
 ModelInfo MockModel::getModelInfo() {
 #if LLOB_USE_MOCK_DATA
     // TinyLlama-shaped fixture so the architecture workspace lights up
