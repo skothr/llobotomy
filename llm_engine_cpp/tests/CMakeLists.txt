@@ -21,12 +21,34 @@ add_smoke_test(NAME model_view        SOURCES test_model_view.cpp)
 # coexists with the existing per-DTO getters.
 add_smoke_test(NAME mock_model_compat SOURCES test_mock_model_compat.cpp)
 
+# Substrate contract — invariants every backend must uphold (capability
+# mirror, clear() resets everything, atomic current safety, tokenizer
+# slot consistency, intervention canonical roundtrip).
+add_smoke_test(NAME substrate_contract SOURCES test_substrate_contract.cpp)
+
+# MockModel data-shape sweep — every per-DTO getter returns sensibly-
+# shaped data under MOCK_DATA=ON and the no-data sentinel under =OFF.
+# Catches getter regressions and false-data leaks in release builds.
+add_smoke_test(NAME mock_data_shapes SOURCES test_mock_data_shapes.cpp)
+
+# Threading stress — 4 readers + 1 writer on ModelView::current for
+# 5000 cycles; verifies no torn reads, ref-count safety under
+# concurrent atomic shared_ptr load/store.  Pure substrate test.
+add_smoke_test(NAME threading_stress SOURCES test_threading_stress.cpp)
+
 # ── Wave C — GgufInspectorEngine ──────────────────────────────────────────
 # GGUF parser — hand-constructed binary buffers, no real model file required.
 add_smoke_test(NAME gguf_parser       SOURCES test_gguf_parser.cpp)
 
 # End-to-end: build GGUF → load → read_slice.
 add_smoke_test(NAME gguf_inspector_engine SOURCES test_gguf_inspector_engine.cpp)
+
+# Deep tier: load a REAL GGUF file (converted from HF via the llama.cpp
+# converter, or any user-supplied path).  Self-skips when
+# LLOB_DEEP_GGUF_PATH is unset.
+add_deep_test(NAME real_gguf
+              SOURCES test_real_gguf.cpp
+              REQUIRES_ENV LLOB_DEEP_GGUF_PATH)
 
 # ── Wave A — HFProxyEngine Phase 2 ────────────────────────────────────────
 # Smoke: construct with dead URL, assert all getters return safe sentinels

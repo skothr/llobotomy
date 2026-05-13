@@ -81,7 +81,12 @@ target_link_libraries(llm_engine
 )
 
 if(LLM_ENGINE_USE_MOCK_DATA)
-  target_compile_definitions(llm_engine PRIVATE LLOB_USE_MOCK_DATA=1)
+  # PUBLIC so consumers (notably the test binaries) can branch on the
+  # mock-mode build flag.  Tests need to know which mode the engine was
+  # built in to assert the right behaviour; runtime detection (e.g.
+  # "is MockModel's topology populated?") is an indirect proxy that
+  # breaks when a future backend populates topology in the OFF mode too.
+  target_compile_definitions(llm_engine PUBLIC LLOB_USE_MOCK_DATA=1)
 endif()
 
 # Threads are needed by the mutex/cv work in HFProxyEngine.

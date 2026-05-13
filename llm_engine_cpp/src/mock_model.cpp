@@ -913,26 +913,26 @@ std::vector<float> MockModel::getTokenIds([[maybe_unused]] std::string_view data
 
 std::vector<TensorMeta> MockModel::getStateDict() {
 #if LLOB_USE_MOCK_DATA
-    auto tm = [](const char* name, std::vector<int> shape, std::int64_t bytes) {
-        TensorMeta m; m.name = name; m.dtype = "fp16";
-        m.shape = std::move(shape); m.stride = { m.shape.empty() ? 1 : m.shape.back(), 1 };
-        m.contiguous = true; m.device = "cuda:0"; m.size_bytes = bytes;
-        return m;
-    };
-    return {
-        tm("embed.weight",                {32000, 384}, 24'576'000),
-        tm("pos_embed.freqs",             {2048, 64},     262'144),
-        tm("blocks.8.attn.W_Q.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_K.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_V.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_O.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.b_Q",           {384},                768),
-        tm("blocks.8.mlp.W_in.weight",    {384, 1536},  1'179'648),
-        tm("blocks.8.mlp.W_out.weight",   {1536, 384},  1'179'648),
-        tm("blocks.8.norm1.weight",       {384},                768),
-        tm("final_norm.weight",           {384},                768),
-        tm("unembed.weight",              {384, 32000}, 24'576'000),
-    };
+    // Single source of truth: walk view.tensors (populated by
+    // populateMockTensors at construction).  Previously this function
+    // hard-coded its own divergent name list — the test
+    // test_mock_model_compat caught the drift once LLOB_USE_MOCK_DATA
+    // was propagated to test binaries (commit history).
+    std::vector<TensorMeta> out;
+    out.reserve(m_state->view.tensors.size());
+    for (const auto& h : m_state->view.tensors.all) {
+        TensorMeta m;
+        m.name  = h.name;
+        m.dtype = dtype_name(h.dtype);
+        m.shape.reserve(h.shape.size());
+        for (auto d : h.shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h.contiguous;
+        m.device      = "cuda:0";
+        m.size_bytes  = static_cast<std::int64_t>(h.byte_length);
+        out.push_back(std::move(m));
+    }
+    return out;
 #else
     return {};
 #endif
@@ -940,7 +940,19 @@ std::vector<TensorMeta> MockModel::getStateDict() {
 
 TensorMeta MockModel::getTensorMeta([[maybe_unused]] std::string_view name) {
 #if LLOB_USE_MOCK_DATA
-    for (const auto& m : getStateDict()) if (m.name == name) return m;
+    // Same single-source-of-truth: look up in the registry directly.
+    if (const TensorHandle* h = m_state->view.tensors.find(name)) {
+        TensorMeta m;
+        m.name  = h->name;
+        m.dtype = dtype_name(h->dtype);
+        m.shape.reserve(h->shape.size());
+        for (auto d : h->shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h->contiguous;
+        m.device      = "cuda:0";
+        m.size_bytes  = static_cast<std::int64_t>(h->byte_length);
+        return m;
+    }
     TensorMeta fallback; fallback.name = std::string(name);
     return fallback;
 #else
