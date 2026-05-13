@@ -105,6 +105,25 @@ struct HFProxyEngine::Impl {
     std::string   pending_prompt;        // "" ⇒ nothing pending
     std::string   active_hash;           // hash of the currently-loaded capture
 
+    // ── Phase 3 intervention state ───────────────────────────────────────
+    // pending_intervention is written by setAblation/setSteering/
+    // clearSteering (under mu).  dirty_intervention signals the worker
+    // to reconcile pending vs. installed (m_view.surgery).
+    //
+    // Steering is handled separately: dirty_steering_op selects the
+    // pending operation (Install vs. Clear).
+    enum class SteeringOp { None, Install, Clear };
+
+    struct PendingIntervention {
+        std::vector<AttentionHeadRef> heads;
+        std::vector<ComponentRef>     components;
+    };
+
+    PendingIntervention  pending_intervention;
+    bool                 dirty_intervention = false;  // ablation set changed
+    SteeringOp           dirty_steering_op  = SteeringOp::None;
+    SteeringConfig       pending_steering;            // valid when dirty_steering_op == Install
+
     // SamplerWorker thread — drives heartbeat (Phase 1) and capture
     // jobs (Phase 2).  Lifecycle tied to Impl.
     std::atomic<bool>           stop_flag{false};
@@ -182,9 +201,41 @@ struct HFProxyEngine::Impl {
                 doCapture(prompt_to_capture);
             }
 
+            // ── Intervention job ─────────────────────────────────────────
+            bool do_ablation = false;
+            PendingIntervention ablation_snap;
+            SteeringOp steer_op = SteeringOp::None;
+            SteeringConfig steer_snap;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                if (dirty_intervention) {
+                    do_ablation       = true;
+                    ablation_snap     = pending_intervention;
+                    dirty_intervention = false;
+                }
+                if (dirty_steering_op != SteeringOp::None) {
+                    steer_op       = dirty_steering_op;
+                    steer_snap     = pending_steering;
+                    dirty_steering_op = SteeringOp::None;
+                }
+            }
+            if (do_ablation) {
+                doAblation(ablation_snap);
+            }
+            if (steer_op == SteeringOp::Install) {
+                doInstallSteering(steer_snap);
+            } else if (steer_op == SteeringOp::Clear) {
+                doClearSteering();
+            }
+
             std::unique_lock<std::mutex> lk(mu);
             wake_cv.wait_for(lk, kHeartbeatInterval,
-                             [this] { return stop_flag.load() || !pending_prompt.empty(); });
+                             [this] {
+                                 return stop_flag.load()
+                                     || !pending_prompt.empty()
+                                     || dirty_intervention
+                                     || dirty_steering_op != SteeringOp::None;
+                             });
         }
     }
 
@@ -267,6 +318,245 @@ struct HFProxyEngine::Impl {
             " layers=" + std::to_string(layers) +
             " heads=" + std::to_string(heads) +
             " seq=" + std::to_string(seq_len));
+    }
+
+    // ── Phase 3 — intervention helpers (run on the worker thread) ────────
+
+    // POST /api/sessions/{n}/surgery for a single op, return true on success.
+    bool postSurgeryOp(const std::string& operation, const json& params) {
+        const std::string path =
+            std::string("/api/sessions/") + kSessionName + "/surgery";
+        const json body = {{"operation", operation}, {"params", params}};
+        auto res = worker_client.Post(path.c_str(), body.dump(), "application/json");
+        if (!res) {
+            log(Severity::Warn, "hf",
+                "surgery POST failed (op=" + operation + "): " +
+                std::string(httplib::to_string(res.error())));
+            return false;
+        }
+        if (res->status >= 400) {
+            log(Severity::Warn, "hf",
+                "surgery POST " + operation + " returned " +
+                std::to_string(res->status) + ": " + res->body);
+            return false;
+        }
+        return true;
+    }
+
+    // POST /surgery/commit — flush all staged ops to the model weights.
+    bool postSurgeryCommit() {
+        const std::string path =
+            std::string("/api/sessions/") + kSessionName + "/surgery/commit";
+        auto res = worker_client.Post(path.c_str(), "{}", "application/json");
+        if (!res) {
+            log(Severity::Warn, "hf",
+                "surgery/commit POST failed: " +
+                std::string(httplib::to_string(res.error())));
+            return false;
+        }
+        if (res->status >= 400) {
+            log(Severity::Warn, "hf",
+                "surgery/commit returned " + std::to_string(res->status) +
+                ": " + res->body);
+            return false;
+        }
+        return true;
+    }
+
+    // Diff pending ablation set against currently-installed, issue POSTs,
+    // commit on success, then update m_view.surgery.
+    void doAblation(const PendingIntervention& snap) {
+        // Collect what's currently installed (snapshot under lock).
+        std::vector<AttentionHeadRef> installed_heads;
+        std::vector<ComponentRef>     installed_comps;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            installed_heads = view.surgery.ablated_heads;
+            installed_comps = view.surgery.ablated_components;
+        }
+
+        // Compute added heads: in snap.heads but not in installed.
+        std::vector<AttentionHeadRef> added_heads;
+        for (const auto& h : snap.heads) {
+            bool found = false;
+            for (const auto& ih : installed_heads) {
+                if (ih == h) { found = true; break; }
+            }
+            if (!found) added_heads.push_back(h);
+        }
+        // Compute removed heads: in installed but not in snap.
+        std::vector<AttentionHeadRef> removed_heads;
+        for (const auto& ih : installed_heads) {
+            bool found = false;
+            for (const auto& h : snap.heads) {
+                if (h == ih) { found = true; break; }
+            }
+            if (!found) removed_heads.push_back(ih);
+        }
+
+        // For removed heads we'd need to POST surgery/revert by index — which
+        // requires knowing the index in the backend's pending queue. Since the
+        // C++ side doesn't maintain that index, and the Python backend doesn't
+        // yet support reverting individual ops atomically, use the simpler
+        // strategy: clear all pending on the backend (GET pending, DELETE each
+        // one), then re-stage the full snap set.  This is safe because a
+        // /surgery/commit has not been issued for the pending queue yet —
+        // we're still in "staged" state.
+        //
+        // If there's nothing to remove (purely additive change) we skip the
+        // clear and just stage the additions — cheaper.
+        const bool needs_clear = !removed_heads.empty()
+                                 || snap.components != installed_comps;
+
+        if (needs_clear) {
+            // Clear the backend's pending surgery queue.
+            const std::string pending_path =
+                std::string("/api/sessions/") + kSessionName + "/surgery/pending";
+            auto pending_res = worker_client.Get(pending_path.c_str());
+            if (!pending_res || pending_res->status != 200) {
+                log(Severity::Warn, "hf",
+                    "ablation: could not fetch pending ops — aborting");
+                return;
+            }
+            int count = 0;
+            try {
+                count = static_cast<int>(
+                    json::parse(pending_res->body).at("pending").size());
+            } catch (...) {}
+
+            // DELETE /surgery/last N times to drain the pending queue.
+            for (int i = 0; i < count; ++i) {
+                const std::string last_path =
+                    std::string("/api/sessions/") + kSessionName +
+                    "/surgery/last";
+                auto del_res = worker_client.Delete(last_path.c_str());
+                if (!del_res || del_res->status >= 400) {
+                    log(Severity::Warn, "hf",
+                        "ablation: failed to delete pending op during clear");
+                    // Continue anyway — queue may already be partially cleared.
+                }
+            }
+            // After clearing: stage the full snap set.
+            added_heads     = snap.heads;
+        }
+
+        // Stage newly-added attention heads.
+        for (const auto& h : added_heads) {
+            const json params = {{"layer", h.layer}, {"heads", json::array({h.head})}};
+            if (!postSurgeryOp("zero_heads", params)) {
+                log(Severity::Warn, "hf",
+                    "ablation: failed to stage zero_heads L=" +
+                    std::to_string(h.layer) + " H=" + std::to_string(h.head));
+                return;
+            }
+        }
+
+        // Stage newly-added components (zero_mlp or zero_attention).
+        for (const auto& c : snap.components) {
+            const bool is_mlp  = (c.component == "mlp");
+            const bool is_attn = (c.component == "attn");
+            if (!is_mlp && !is_attn) {
+                log(Severity::Warn, "hf",
+                    "ablation: component '" + c.component +
+                    "' not stageable via surgery — skipped");
+                continue;
+            }
+            const std::string op = is_mlp ? "zero_mlp" : "zero_attention";
+            const json params    = {{"layer", c.layer}};
+            if (!postSurgeryOp(op, params)) {
+                log(Severity::Warn, "hf",
+                    "ablation: failed to stage " + op +
+                    " L=" + std::to_string(c.layer));
+                return;
+            }
+        }
+
+        // No ops staged (the snap is empty and nothing was queued).
+        // Commit regardless — the Python side returns 409 if nothing is
+        // pending, which we treat as a non-fatal warn.
+        if (snap.heads.empty() && snap.components.empty() && !needs_clear) {
+            // Nothing to do.
+            std::lock_guard<std::mutex> lk(mu);
+            view.surgery.ablated_heads.clear();
+            view.surgery.ablated_components.clear();
+            return;
+        }
+
+        if (!postSurgeryCommit()) {
+            log(Severity::Warn, "hf",
+                "ablation: commit failed — m_view.surgery unchanged (stale)");
+            return;
+        }
+
+        // Commit succeeded: update m_view.surgery and invalidate the capture.
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            view.surgery.ablated_heads      = snap.heads;
+            view.surgery.ablated_components = snap.components;
+        }
+        view.current.store(nullptr);  // capture invalidated — UI re-runs prompt
+
+        log(Severity::Info, "hf",
+            "ablation committed: " +
+            std::to_string(snap.heads.size()) + " head(s), " +
+            std::to_string(snap.components.size()) + " component(s)");
+    }
+
+    // POST /api/sessions/{n}/steering
+    void doInstallSteering(const SteeringConfig& cfg) {
+        const std::string path =
+            std::string("/api/sessions/") + kSessionName + "/steering";
+        const json body = {
+            {"layer",  cfg.layer},
+            {"alpha",  cfg.alpha},
+            {"source", cfg.source},
+        };
+        auto res = worker_client.Post(path.c_str(), body.dump(), "application/json");
+        if (!res) {
+            log(Severity::Warn, "hf",
+                "steering POST failed: " +
+                std::string(httplib::to_string(res.error())));
+            return;
+        }
+        if (res->status >= 400) {
+            log(Severity::Warn, "hf",
+                "steering POST returned " + std::to_string(res->status) +
+                ": " + res->body);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            view.surgery.steering = cfg;
+        }
+        view.current.store(nullptr);
+        log(Severity::Info, "hf",
+            "steering installed: layer=" + cfg.layer +
+            " alpha=" + std::to_string(cfg.alpha));
+    }
+
+    // DELETE /api/sessions/{n}/steering
+    void doClearSteering() {
+        const std::string path =
+            std::string("/api/sessions/") + kSessionName + "/steering";
+        auto res = worker_client.Delete(path.c_str());
+        if (!res) {
+            log(Severity::Warn, "hf",
+                "steering DELETE failed: " +
+                std::string(httplib::to_string(res.error())));
+            return;
+        }
+        if (res->status >= 400 && res->status != 404) {
+            log(Severity::Warn, "hf",
+                "steering DELETE returned " + std::to_string(res->status) +
+                ": " + res->body);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            view.surgery.steering = SteeringConfig{};
+        }
+        view.current.store(nullptr);
+        log(Severity::Info, "hf", "steering cleared");
     }
 };
 
@@ -368,9 +658,9 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                     .content_hash = "",
                     .source_label = "HuggingFace via FastAPI (" + m_impl->base_url + ")",
                 };
-                // Capability mirror for the path API.  Phase 2: topology,
-                // tokenizer (via /capture + /tokens), attention matrices,
-                // residual summaries, QKV stats, and captures are wired.
+                // Capability mirror for the path API.  Phase 3: intervention
+                // endpoints are wired (setAblation / setSteering /
+                // clearSteering via /surgery + /steering).
                 m_impl->view.capabilities = Capabilities{
                     .has_topology      = true,
                     .has_tokenizer     = true,   // token strings from /capture/tokens
@@ -380,7 +670,7 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                     .has_logit_lens    = false,
                     .has_token_stream  = false,
                     .has_captures      = true,
-                    .has_intervention  = false,
+                    .has_intervention  = true,   // Phase 3: setAblation / setSteering
                     .has_weight_deltas = false,
                     .has_training      = false,
                 };
@@ -679,6 +969,58 @@ QKVStats HFProxyEngine::getQKVStats(int layer, int head, int token) {
         return {};
     }
     return q;
+}
+
+// ── Phase 3 — intervention mutators ───────────────────────────────────────
+
+void HFProxyEngine::setAblation(
+    const std::vector<std::string>& head_canonical,
+    const std::vector<std::string>& component_canonical)
+{
+    Impl::PendingIntervention pi;
+
+    for (const auto& name : head_canonical) {
+        auto ref = AttentionHeadRef::parse(name);
+        if (!ref) {
+            m_impl->log(Severity::Warn, "hf",
+                        "setAblation: failed to parse head ref '" + name + "' — skipped");
+            continue;
+        }
+        pi.heads.push_back(*ref);
+    }
+    for (const auto& name : component_canonical) {
+        auto ref = ComponentRef::parse(name);
+        if (!ref) {
+            m_impl->log(Severity::Warn, "hf",
+                        "setAblation: failed to parse component ref '" + name + "' — skipped");
+            continue;
+        }
+        pi.components.push_back(*ref);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->pending_intervention = std::move(pi);
+        m_impl->dirty_intervention   = true;
+    }
+    m_impl->wake_cv.notify_all();
+}
+
+void HFProxyEngine::setSteering(const SteeringConfig& cfg) {
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->pending_steering   = cfg;
+        m_impl->dirty_steering_op  = Impl::SteeringOp::Install;
+    }
+    m_impl->wake_cv.notify_all();
+}
+
+void HFProxyEngine::clearSteering() {
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->dirty_steering_op = Impl::SteeringOp::Clear;
+    }
+    m_impl->wake_cv.notify_all();
 }
 
 }  // namespace llmengine

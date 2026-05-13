@@ -36,6 +36,19 @@ add_smoke_test(NAME mock_data_shapes SOURCES test_mock_data_shapes.cpp)
 # concurrent atomic shared_ptr load/store.  Pure substrate test.
 add_smoke_test(NAME threading_stress SOURCES test_threading_stress.cpp)
 
+# LoadOptions roundtrip — verifies the "ignore unknown extras"
+# forward-compat contract every backend must uphold.
+add_smoke_test(NAME load_options SOURCES test_load_options.cpp)
+
+# DerivedCache threading — same-key contention (compute-at-most-once),
+# disjoint-key parallelism (exactly-once each), concurrent invalidate.
+add_smoke_test(NAME derived_cache_threading SOURCES test_derived_cache_threading.cpp)
+
+# Exhaustive path-API coverage — every documented ModelView::get(path)
+# resolves to the right variant arm; malformed paths return monostate
+# without crashing.
+add_smoke_test(NAME path_api SOURCES test_path_api.cpp)
+
 # ── Wave C — GgufInspectorEngine ──────────────────────────────────────────
 # GGUF parser — hand-constructed binary buffers, no real model file required.
 add_smoke_test(NAME gguf_parser       SOURCES test_gguf_parser.cpp)
@@ -64,6 +77,22 @@ target_compile_definitions(test_hf_proxy_capture_integration PRIVATE
 target_link_libraries(test_hf_proxy_capture_integration PRIVATE llmengine::llm_engine)
 add_test(NAME hf_proxy_capture_integration COMMAND test_hf_proxy_capture_integration)
 set_tests_properties(hf_proxy_capture_integration PROPERTIES LABELS "deep")
+
+# ── Wave A — HFProxyEngine Phase 3 (intervention wiring) ──────────────────
+# Smoke: dead-URL engine, setAblation/setSteering/clearSteering no-crash;
+# m_view.surgery stays empty (no commit possible against dead URL); invalid
+# canonical names are skipped gracefully.
+add_smoke_test(NAME hf_proxy_intervention SOURCES test_hf_proxy_intervention.cpp)
+
+# Deep / integration tier: live backend + TinyLlama.  Loads baseline capture,
+# ablates head (5,3), re-captures, verifies pattern changed.  Self-skips when
+# LLOB_INTEGRATION_TEST=1 isn't set at runtime.
+add_executable(test_hf_proxy_intervention_integration test_hf_proxy_intervention.cpp)
+target_compile_definitions(test_hf_proxy_intervention_integration PRIVATE
+    LLOB_INTEGRATION_TEST_ENABLED=1)
+target_link_libraries(test_hf_proxy_intervention_integration PRIVATE llmengine::llm_engine)
+add_test(NAME hf_proxy_intervention_integration COMMAND test_hf_proxy_intervention_integration)
+set_tests_properties(hf_proxy_intervention_integration PROPERTIES LABELS "deep")
 
 # ── Wave D — LlamaCppEngine ───────────────────────────────────────────────
 # Smoke tier: no real model needed; tests construction, bad-path failure,

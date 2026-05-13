@@ -70,6 +70,22 @@ public:
     QKVStats                        getQKVStats        (int layer, int head,
                                                         int token)            override;
 
+    // ── Phase 3 hooks — intervention wiring ───────────────────────────────
+    // setAblation: installs the full ablation set (overwrites any prior
+    // pending set). Worker thread diffs against m_view.surgery and issues
+    // individual POST /surgery ops + one POST /surgery/commit.
+    //
+    // setSteering: POST /api/sessions/{n}/steering with {layer, alpha, source}.
+    // clearSteering: DELETE /api/sessions/{n}/steering.
+    //
+    // All three are fire-and-forget from the caller's perspective: they
+    // update pending state and wake the worker; the worker does the HTTP
+    // round-trip and, on success, updates m_view.surgery.
+    void setAblation   (const std::vector<std::string>& head_canonical,
+                        const std::vector<std::string>& component_canonical) override;
+    void setSteering   (const SteeringConfig& cfg)                           override;
+    void clearSteering ()                                                     override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
