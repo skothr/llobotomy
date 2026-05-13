@@ -42,3 +42,22 @@ target_compile_definitions(test_hf_proxy_capture_integration PRIVATE
 target_link_libraries(test_hf_proxy_capture_integration PRIVATE llmengine::llm_engine)
 add_test(NAME hf_proxy_capture_integration COMMAND test_hf_proxy_capture_integration)
 set_tests_properties(hf_proxy_capture_integration PROPERTIES LABELS "deep")
+
+# ── Wave D — LlamaCppEngine ───────────────────────────────────────────────
+# Smoke tier: no real model needed; tests construction, bad-path failure,
+# post-unload sentinels.  Compiles and runs with LLM_ENGINE_BUILD_LLAMA_CPP
+# ON or OFF (graceful-failure path tested in the OFF case).
+add_smoke_test(NAME llama_cpp_smoke SOURCES test_llama_cpp_smoke.cpp)
+
+# Deep tier: requires LLOB_DEEP_LLAMA_GGUF_PATH env var pointing at a GGUF.
+# The test binary self-skips (exit 0) when the var is absent.
+add_deep_test(NAME llama_cpp_real
+              SOURCES test_llama_cpp_real.cpp
+              REQUIRES_ENV LLOB_DEEP_LLAMA_GGUF_PATH)
+
+# Propagate the llama.cpp availability flag to the test binaries so their
+# informational messages are accurate.
+if(LLM_ENGINE_BUILD_LLAMA_CPP)
+  target_compile_definitions(test_llama_cpp_smoke PRIVATE LLM_ENGINE_HAVE_LLAMA_CPP=1)
+  target_compile_definitions(test_llama_cpp_real  PRIVATE LLM_ENGINE_HAVE_LLAMA_CPP=1)
+endif()
