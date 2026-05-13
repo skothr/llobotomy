@@ -86,6 +86,21 @@ public:
     void setSteering   (const SteeringConfig& cfg)                           override;
     void clearSteering ()                                                     override;
 
+    // ── Phase 4 hooks — WebSocket streams ─────────────────────────────────
+    // getLogitLensTrajectory: opens WS /ws/sessions/{n}/logit-lens, sends
+    // {prompt, top_k}, accumulates per-layer frames, returns when "complete"
+    // is received or the connection closes.  Synchronous on the caller's
+    // thread (intended to be called from a background thread / DerivedCache
+    // worker, not the UI thread).
+    //
+    // getOutputLogits: opens WS /ws/sessions/{n}/generate, streams tokens,
+    // returns top-k from the last data frame.  Synchronous similarly.
+    //
+    // Both override the MockModel no-ops that return {} when no backend is
+    // wired.  On WS connection failure they log a warn and return {}.
+    std::vector<LogitLensRow> getLogitLensTrajectory(int token, int kLayers) override;
+    std::vector<LogitDist>    getOutputLogits       (int k)                  override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

@@ -30,8 +30,8 @@ unset) picks `MockModel`, preserving the existing dev workflow.
 |---|---|---|
 | 1 | `loadCheckpoint`, `unloadCheckpoint`, `drainEngineLogs` | shipped |
 | 2 | `setActivePrompt` → `/capture`, `getCurrentTokens`, `getAttentionPattern`, `getResidualSummary`, `getQKVStats` | shipped |
-| 3 | `setAblation` (→ `surgery` POST + commit), `setSteering`/`clearSteering` | TBD |
-| 4 | WebSocket streams (`/ws/.../generate` for live token stream + `getOutputLogits`) | TBD |
+| 3 | `setAblation` (→ `surgery` POST + commit), `setSteering`/`clearSteering` | shipped |
+| 4 | WebSocket streams (`/ws/.../logit-lens` → `getLogitLensTrajectory`, `/ws/.../generate` → `getOutputLogits`) | shipped |
 | 5 | Backend additions: state-dict enumeration, weight stats, tensor pages | TBD |
 
 ## Endpoint mapping

@@ -94,6 +94,22 @@ target_link_libraries(test_hf_proxy_intervention_integration PRIVATE llmengine::
 add_test(NAME hf_proxy_intervention_integration COMMAND test_hf_proxy_intervention_integration)
 set_tests_properties(hf_proxy_intervention_integration PROPERTIES LABELS "deep")
 
+# ── Wave A — HFProxyEngine Phase 4 (WebSocket streams) ───────────────────
+# Smoke: dead-URL engine, getLogitLensTrajectory + getOutputLogits return {}
+# without crashing; capabilities.has_logit_lens / has_token_stream stay false
+# when load fails.
+add_smoke_test(NAME hf_proxy_ws SOURCES test_hf_proxy_ws.cpp)
+
+# Deep / integration tier: live backend + TinyLlama.  Asserts logit-lens rows
+# are non-empty and getOutputLogits returns top-k with probabilities in [0,1].
+# Self-skips when LLOB_INTEGRATION_TEST=1 isn't set at runtime.
+add_executable(test_hf_proxy_ws_integration test_hf_proxy_ws.cpp)
+target_compile_definitions(test_hf_proxy_ws_integration PRIVATE
+    LLOB_INTEGRATION_TEST_ENABLED=1)
+target_link_libraries(test_hf_proxy_ws_integration PRIVATE llmengine::llm_engine)
+add_test(NAME hf_proxy_ws_integration COMMAND test_hf_proxy_ws_integration)
+set_tests_properties(hf_proxy_ws_integration PROPERTIES LABELS "deep")
+
 # ── Wave D — LlamaCppEngine ───────────────────────────────────────────────
 # Smoke tier: no real model needed; tests construction, bad-path failure,
 # post-unload sentinels.  Compiles and runs with LLM_ENGINE_BUILD_LLAMA_CPP

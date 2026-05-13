@@ -19,6 +19,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 using nlohmann::json;
 
@@ -124,6 +125,12 @@ struct HFProxyEngine::Impl {
     SteeringOp           dirty_steering_op  = SteeringOp::None;
     SteeringConfig       pending_steering;            // valid when dirty_steering_op == Install
 
+    // ── Phase 4 — WS stream state ────────────────────────────────────────
+    // ws_base is the base_url with "http" replaced by "ws" (or "https"→"wss").
+    // Used by getLogitLensTrajectory / getOutputLogits to build full WS URLs.
+    // Computed once at construction.
+    std::string ws_base;
+
     // SamplerWorker thread — drives heartbeat (Phase 1) and capture
     // jobs (Phase 2).  Lifecycle tied to Impl.
     std::atomic<bool>           stop_flag{false};
@@ -134,6 +141,13 @@ struct HFProxyEngine::Impl {
         : base_url(std::move(url)),
           client(base_url),
           worker_client(base_url) {
+        // Derive WS base URL from the HTTP base URL (http→ws, https→wss).
+        ws_base = base_url;
+        if (ws_base.substr(0, 8) == "https://") {
+            ws_base = "wss://" + ws_base.substr(8);
+        } else if (ws_base.substr(0, 7) == "http://") {
+            ws_base = "ws://" + ws_base.substr(7);
+        }
         // Connect quickly so a missing backend surfaces a clear error
         // instead of an indefinite hang.  Read/write are generous because
         // the model-load endpoint can take 10s+ for large checkpoints.
@@ -661,14 +675,19 @@ Model::CheckpointResult HFProxyEngine::loadCheckpoint(std::string_view path) {
                 // Capability mirror for the path API.  Phase 3: intervention
                 // endpoints are wired (setAblation / setSteering /
                 // clearSteering via /surgery + /steering).
+                // Phase 4: logit-lens + token-stream via WebSocket;
+                // capabilities are flipped to true here to advertise
+                // the hooks.  The first actual WS call may still fail
+                // gracefully (unreachable backend) — the UI will then
+                // show empty panels rather than crashing.
                 m_impl->view.capabilities = Capabilities{
                     .has_topology      = true,
                     .has_tokenizer     = true,   // token strings from /capture/tokens
                     .has_state_dict    = false,
                     .has_attention     = true,
                     .has_residual      = true,
-                    .has_logit_lens    = false,
-                    .has_token_stream  = false,
+                    .has_logit_lens    = true,   // Phase 4: WS logit-lens
+                    .has_token_stream  = true,   // Phase 4: WS generate
                     .has_captures      = true,
                     .has_intervention  = true,   // Phase 3: setAblation / setSteering
                     .has_weight_deltas = false,
@@ -1021,6 +1040,267 @@ void HFProxyEngine::clearSteering() {
         m_impl->dirty_steering_op = Impl::SteeringOp::Clear;
     }
     m_impl->wake_cv.notify_all();
+}
+
+// ── Phase 4 — WebSocket stream implementations ────────────────────────────
+
+// getLogitLensTrajectory: open WS /ws/sessions/{n}/logit-lens, send
+// {prompt, top_k: kLayers}, accumulate per-layer frames into LogitLensRow
+// vector.  Returns {} on WS connection failure or empty capture.
+//
+// The `token` parameter selects which token position to inspect.  The
+// backend's logit-lens streams predictions for all positions simultaneously
+// (as arrays of per-position top-k); we extract the [token] position from
+// each layer frame.
+std::vector<LogitLensRow> HFProxyEngine::getLogitLensTrajectory(
+    int token, int kLayers)
+{
+    // We need a captured prompt to send.  Use the current bundle's token
+    // strings to reconstruct the prompt — or fall back to empty string
+    // (the backend will use whatever is in the active session).
+    std::string prompt;
+    {
+        auto bundle = m_impl->view.current.load();
+        if (bundle) {
+            for (const auto& s : bundle->token_strs)
+                prompt += s;
+        }
+    }
+
+    const int top_k = (kLayers > 0) ? kLayers : 5;
+    const std::string ws_url =
+        m_impl->ws_base + "/ws/sessions/" + kSessionName + "/logit-lens";
+
+    httplib::ws::WebSocketClient ws(ws_url);
+    ws.set_connection_timeout(3, 0);
+    ws.set_read_timeout(30, 0);
+    ws.set_write_timeout(5, 0);
+
+    if (!ws.is_valid()) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getLogitLensTrajectory: invalid WS URL: " + ws_url);
+        return {};
+    }
+    if (!ws.connect()) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getLogitLensTrajectory: WS connect failed: " + ws_url);
+        return {};
+    }
+
+    // Send config.
+    const json config = {{"prompt", prompt}, {"top_k", top_k}};
+    if (!ws.send(config.dump())) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getLogitLensTrajectory: WS send failed");
+        ws.close();
+        return {};
+    }
+
+    std::vector<LogitLensRow> rows;
+    std::string msg;
+    while (true) {
+        const auto rr = ws.read(msg);
+        if (rr == httplib::ws::ReadResult::Fail) break;
+        if (rr != httplib::ws::ReadResult::Text) continue;
+
+        json frame;
+        try { frame = json::parse(msg); }
+        catch (...) { continue; }
+
+        const std::string type = json_string(frame, "type");
+        if (type == "complete" || type == "error") break;
+        if (type != "data") continue;
+
+        // Each "data" frame has a "predictions" array: one entry per
+        // token position.  We extract position `token` (clamp to valid).
+        const int layer = json_int(frame, "layer", static_cast<int>(rows.size()));
+
+        LogitLensRow row;
+        row.layer       = layer;
+        row.p1          = kNoFloat;
+        row.p2          = kNoFloat;
+        row.entropy     = kNoFloat;
+        row.is_resolved = false;
+
+        auto preds_it = frame.find("predictions");
+        if (preds_it != frame.end() && preds_it->is_array()) {
+            const auto& positions = *preds_it;
+            const int pos = std::clamp(token, 0,
+                                       static_cast<int>(positions.size()) - 1);
+            if (pos >= 0 && pos < static_cast<int>(positions.size())) {
+                const auto& top = positions[static_cast<std::size_t>(pos)];
+                if (top.is_array() && !top.empty()) {
+                    const auto& first = top[0];
+                    row.top1 = first.value("token", std::string{});
+                    row.p1   = static_cast<float>(first.value("prob", 0.0));
+                    if (top.size() > 1) {
+                        const auto& second = top[1];
+                        row.top2 = second.value("token", std::string{});
+                        row.p2   = static_cast<float>(second.value("prob", 0.0));
+                    }
+                }
+            }
+        }
+
+        // Extract entropy from the per-layer metrics array if present.
+        auto metrics_it = frame.find("metrics");
+        if (metrics_it != frame.end() && metrics_it->is_array()) {
+            for (const auto& m : *metrics_it) {
+                const std::string name = m.value("name", std::string{});
+                if (name == "entropy" || name == "H") {
+                    const auto& vals = m.find("values");
+                    if (vals != m.end() && vals->is_array()) {
+                        const int pos = std::clamp(token, 0,
+                            static_cast<int>(vals->size()) - 1);
+                        if (pos >= 0 && pos < static_cast<int>(vals->size())) {
+                            row.entropy = static_cast<float>((*vals)[static_cast<std::size_t>(pos)]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark as resolved once top-1 stabilises (same token as previous
+        // layer, if any).
+        if (!rows.empty() && rows.back().top1 == row.top1 && !row.top1.empty()) {
+            row.is_resolved = true;
+        }
+
+        rows.push_back(std::move(row));
+    }
+
+    ws.close();
+
+    // Capability update: we have logit-lens data.
+    if (!rows.empty()) {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->view.capabilities.has_logit_lens = true;
+    }
+
+    return rows;
+}
+
+// getOutputLogits: open WS /ws/sessions/{n}/generate, stream tokens,
+// collect top-k from each frame.  Return the last frame's top-k as
+// LogitDist vector.  Returns {} on WS failure or no frames.
+std::vector<LogitDist> HFProxyEngine::getOutputLogits(int k)
+{
+    std::string prompt;
+    {
+        auto bundle = m_impl->view.current.load();
+        if (bundle) {
+            for (const auto& s : bundle->token_strs)
+                prompt += s;
+        }
+    }
+
+    const int display_top_k = (k > 0) ? k : 5;
+    const std::string ws_url =
+        m_impl->ws_base + "/ws/sessions/" + kSessionName + "/generate";
+
+    httplib::ws::WebSocketClient ws(ws_url);
+    ws.set_connection_timeout(3, 0);
+    ws.set_read_timeout(120, 0);   // generation can be slow
+    ws.set_write_timeout(5, 0);
+
+    if (!ws.is_valid()) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getOutputLogits: invalid WS URL: " + ws_url);
+        return {};
+    }
+    if (!ws.connect()) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getOutputLogits: WS connect failed: " + ws_url);
+        return {};
+    }
+
+    // Send generation config.
+    const json config = {
+        {"prompt",        prompt},
+        {"max_tokens",    64},
+        {"temperature",   1.0},
+        {"display_top_k", display_top_k},
+    };
+    if (!ws.send(config.dump())) {
+        m_impl->log(Severity::Warn, "hf",
+                    "getOutputLogits: WS send failed");
+        ws.close();
+        return {};
+    }
+
+    // Accumulate token_ids / token_strs from each "data" frame.
+    // Also track the last frame's top_k for the return value.
+    std::vector<TokenId>     new_token_ids;
+    std::vector<std::string> new_token_strs;
+    std::vector<LogitDist>   last_top_k;
+
+    std::string msg;
+    while (true) {
+        const auto rr = ws.read(msg);
+        if (rr == httplib::ws::ReadResult::Fail) break;
+        if (rr != httplib::ws::ReadResult::Text) continue;
+
+        json frame;
+        try { frame = json::parse(msg); }
+        catch (...) { continue; }
+
+        const std::string type = json_string(frame, "type");
+        if (type == "error") {
+            m_impl->log(Severity::Warn, "hf",
+                        "getOutputLogits: backend error: " + json_string(frame, "message"));
+            break;
+        }
+        if (type == "complete") break;
+        if (type != "data") continue;
+
+        const std::string tok_str = json_string(frame, "token");
+        const int         tok_id  = json_int(frame, "token_id", 0);
+        new_token_ids .push_back(static_cast<TokenId>(tok_id));
+        new_token_strs.push_back(tok_str);
+
+        // Parse top_k for this step.
+        auto top_it = frame.find("top_k");
+        if (top_it != frame.end() && top_it->is_array()) {
+            last_top_k.clear();
+            last_top_k.reserve(top_it->size());
+            for (const auto& entry : *top_it) {
+                LogitDist ld;
+                ld.token    = entry.value("token", std::string{});
+                ld.prob     = static_cast<float>(entry.value("prob", 0.0));
+                ld.delta    = 0.0f;
+                ld.selected = false;
+                last_top_k.push_back(std::move(ld));
+            }
+        }
+    }
+
+    ws.close();
+
+    // Extend the current bundle with the generated tokens.
+    if (!new_token_strs.empty()) {
+        auto bundle = m_impl->view.current.load();
+        if (bundle) {
+            // Allocate a new bundle that extends the current one.
+            auto extended = std::make_shared<CaptureBundle>(*bundle);
+            for (std::size_t i = 0; i < new_token_ids.size(); ++i) {
+                extended->token_ids .push_back(new_token_ids[i]);
+                extended->token_strs.push_back(new_token_strs[i]);
+            }
+            {
+                std::lock_guard<std::mutex> lk(m_impl->mu);
+                m_impl->view.captures[extended->prompt_hash] = extended;
+                m_impl->view.capabilities.has_token_stream = true;
+            }
+            m_impl->view.current.store(extended);
+        }
+    }
+
+    // Mark top-1 as selected if there is a top-1.
+    if (!last_top_k.empty()) {
+        last_top_k[0].selected = true;
+    }
+
+    return last_top_k;
 }
 
 }  // namespace llmengine
