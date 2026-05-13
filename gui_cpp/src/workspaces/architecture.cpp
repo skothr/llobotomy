@@ -31,7 +31,7 @@ namespace {
 
 constexpr float kBlockH_Skipped   = 22.0f;
 constexpr float kBlockH_Collapsed = 32.0f;
-constexpr float kBlockH_Expanded  = 132.0f;
+constexpr float kBlockH_Expanded  = 140.0f;     // grew from 132 to fit cell-h 30 stack
 constexpr float kLayerGap         = 4.0f;
 
 struct Cols {
@@ -411,28 +411,36 @@ void DrawArchMap(AppState& s, Model& m) {
             dl->AddText(P(cols.qkv.x - 8, y0 + 4), Sty().info, "v ATTN");
             dl->AddText(P(cols.norm2.x - 8, y0 + 4), Sty().warn, "v MLP");
 
-            // Component cells (centered around y0 + 32 + offset)
+            // Component cells.  Cell height was 26px which clipped the
+            // subtitle painted at y+16 (font ~14px → ends y+30, 4px past
+            // the bottom border).  Cells are now 30px and the row base
+            // shifted down to y0+56 to leave clearance for the ATTN/MLP
+            // section labels at y0+4.  Three-cell stacks use yShift
+            // ±32/0; two-cell stacks ±32 (skipping middle for the silu
+            // gap).  Step 32 = cell-height 30 + 2px gap.
+            constexpr float kCompH    = 30.0f;
+            constexpr float kCompBase = 56.0f;
             auto drawComp = [&](const char* id, std::string_view ref, float x, float w,
                                 const char* label, const char* sub, ImU32 fg, ImU32 bg,
                                 float yShift) {
                 ImGui::PushID(id);
-                const float yMid = y0 + 32.0f + yShift;
+                const float yMid = y0 + kCompBase + yShift;
                 char absk[64]; std::snprintf(absk, sizeof absk, "%d.%.40s", L, std::string(ref).c_str());
                 const bool ab = s.ablatedComponents.contains(absk);
                 const bool pr = s.probedComponents.contains(absk);
-                dl->AddRectFilled(P(x, yMid), P(x + w, yMid + 26), bg);
-                dl->AddRect      (P(x, yMid), P(x + w, yMid + 26),
+                dl->AddRectFilled(P(x, yMid), P(x + w, yMid + kCompH), bg);
+                dl->AddRect      (P(x, yMid), P(x + w, yMid + kCompH),
                                   ab ? Sty().bad : fg, 0, 0, 1.0f);
                 if (ab) {
-                    AddDashedLine(dl, P(x, yMid),       P(x + w, yMid),       Sty().bad, 3, 2, 1);
-                    AddDashedLine(dl, P(x, yMid + 26),  P(x + w, yMid + 26),  Sty().bad, 3, 2, 1);
+                    AddDashedLine(dl, P(x, yMid),           P(x + w, yMid),           Sty().bad, 3, 2, 1);
+                    AddDashedLine(dl, P(x, yMid + kCompH),  P(x + w, yMid + kCompH),  Sty().bad, 3, 2, 1);
                 }
                 if (pr) dl->AddCircleFilled(P(x + w - 4, yMid + 3), 2.5f * Z, Sty().accent);
                 dl->AddText(P(x + 6, yMid + 4),  fg, label);
                 if (sub) dl->AddText(P(x + 6, yMid + 16), Sty().text_muted, sub);
 
                 ImGui::SetCursorScreenPos(P(x, yMid));
-                ImGui::InvisibleButton("c", { w * Z, 26 * Z });
+                ImGui::InvisibleButton("c", { w * Z, kCompH * Z });
                 if (ImGui::IsItemClicked()) s.toggleProbeComp(L, ref);
                 if (WasRightClicked())      s.toggleAblateComp(L, ref);
                 ImGui::PopID();
@@ -443,11 +451,11 @@ void DrawArchMap(AppState& s, Model& m) {
                      Sty().text_muted, Sty().bg_panel_alt, 0);
 
             drawComp("WQ", "W_Q", cols.qkv.x, cols.qkv.w, "W_Q", "d->d",
-                     Sty().info, WithAlpha(Sty().info, 0.10f), -26);
+                     Sty().info, WithAlpha(Sty().info, 0.10f), -32);
             drawComp("WK", "W_K", cols.qkv.x, cols.qkv.w, "W_K", "d->d",
                      Sty().info, WithAlpha(Sty().info, 0.10f), 0);
             drawComp("WV", "W_V", cols.qkv.x, cols.qkv.w, "W_V", "d->d",
-                     Sty().info, WithAlpha(Sty().info, 0.10f), 26);
+                     Sty().info, WithAlpha(Sty().info, 0.10f), 32);
 
             // Head cells (clickable)
             for (int hd = 0; hd < s.model.nHeads; ++hd) {
@@ -457,7 +465,10 @@ void DrawArchMap(AppState& s, Model& m) {
                 const bool pr = s.probedHeads.contains(hk);
                 const float sig = m.getHeadNorm(L, hd);
                 const float hx = cols.heads.x + hd * (cols.headCellW + cols.headCellGap);
-                const float hy = y0 + 32 - 4;
+                // Align head cells with the middle component row (yMid = y0+56)
+                // so the heads strip sits next to W_O at the same vertical
+                // center.  Head cell height is 34; centre on y0+71.
+                const float hy = y0 + 54;
                 const ImU32 fill = ab ? Sty().bad_bg
                                   : WithAlpha(Sty().accent, 0.10f + sig * 0.35f);
                 const ImU32 bd   = pr ? Sty().accent : (ab ? Sty().bad : Sty().info);
@@ -489,13 +500,14 @@ void DrawArchMap(AppState& s, Model& m) {
                      Sty().text_muted, Sty().bg_panel_alt, 0);
             char gu[32]; std::snprintf(gu, sizeof gu, "d->%d", s.model.dMlp);
             drawComp("Wig", "W_in_gate", cols.gateup.x, cols.gateup.w, "W_in (gate)", gu,
-                     Sty().warn, WithAlpha(Sty().warn, 0.10f), -15);
+                     Sty().warn, WithAlpha(Sty().warn, 0.10f), -32);
             drawComp("Wiu", "W_in_up",   cols.gateup.x, cols.gateup.w, "W_in (up)",   gu,
-                     Sty().warn, WithAlpha(Sty().warn, 0.10f), 15);
+                     Sty().warn, WithAlpha(Sty().warn, 0.10f), 32);
 
-            dl->AddCircleFilled(P(cols.silu.x + cols.silu.w * 0.5f, y0 + 45), 9 * Z, Sty().bg_input);
-            dl->AddCircle      (P(cols.silu.x + cols.silu.w * 0.5f, y0 + 45), 9 * Z, Sty().warn, 0, 1);
-            dl->AddText        (P(cols.silu.x + cols.silu.w * 0.5f - 3, y0 + 40), Sty().warn, "x");
+            // silu × node centred between the two W_in cells (middle row)
+            dl->AddCircleFilled(P(cols.silu.x + cols.silu.w * 0.5f, y0 + 71), 9 * Z, Sty().bg_input);
+            dl->AddCircle      (P(cols.silu.x + cols.silu.w * 0.5f, y0 + 71), 9 * Z, Sty().warn, 0, 1);
+            dl->AddText        (P(cols.silu.x + cols.silu.w * 0.5f - 3, y0 + 66), Sty().warn, "x");
 
             char gout[32]; std::snprintf(gout, sizeof gout, "%d->d", s.model.dMlp);
             drawComp("Wo", "W_out", cols.wout.x, cols.wout.w, "W_out", gout,
