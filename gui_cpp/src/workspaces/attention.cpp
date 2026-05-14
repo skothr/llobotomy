@@ -273,7 +273,26 @@ void SubmitAttentionPanels(AppState& s, Model& m) {
         ImGui::End();
         return;
     }
+    // Capability gate — attention panels need has_attention (cb_eval
+    // captures or equivalent).  GgufInspector reads tensors but doesn't
+    // run forward passes; replace per-panel empty plots with a unified
+    // honest placeholder.
+    if (!m.getCapabilities().has_attention) {
+        if (ImGui::Begin("attn.head_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't expose attention captures —\n"
+                "// needs has_attention (LlamaCpp post-load or HFProxy\n"
+                "// with capture endpoints wired).");
+        }
+        ImGui::End();
+        return;
+    }
     if (ImGui::Begin("attn.head_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawHeadBrowser(s, m);
+    ImGui::End();
+    if (ImGui::Begin("attn.head_grid", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+        DrawTitleBar("head_grid", "ablation", "click to toggle", "live");
+        DrawHeadGrid(s, m);
+    }
     ImGui::End();
     if (ImGui::Begin("attn.main",         nullptr, ImGuiWindowFlags_NoTitleBar)) DrawAttnMain   (s, m);
     ImGui::End();

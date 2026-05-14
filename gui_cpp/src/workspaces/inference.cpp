@@ -442,12 +442,31 @@ void SubmitInferencePanels(AppState& s, Model& m) {
     if (ImGui::Begin("inf.prompt", nullptr, ImGuiWindowFlags_NoTitleBar)) {
         DrawTitleBar("prompt", "txt", "", "live");
         DrawPromptInput(s, m);
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("sampler")) {
+            DrawSamplerControls(s, m);
+        }
     }
     ImGui::End();
 
     if (!s.hasModel()) {
         if (ImGui::Begin("inf.resid", nullptr, ImGuiWindowFlags_NoTitleBar)) {
             EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
+        }
+        ImGui::End();
+        return;
+    }
+    // Capability gate — inference panels need an engine that does
+    // captures (attention + residual + logits via cb_eval or equivalent).
+    // GgufInspector loads tensor topology but doesn't run forward passes,
+    // so this workspace's panels would render empty without a sensible
+    // explanation.  Replace with a single honest placeholder.
+    if (!m.getCapabilities().has_captures) {
+        if (ImGui::Begin("inf.resid", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't run forward passes — inference\n"
+                "// panels need has_captures (LlamaCpp or HFProxy with\n"
+                "// capture flow wired).");
         }
         ImGui::End();
         return;
