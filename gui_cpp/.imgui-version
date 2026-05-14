@@ -1,0 +1,3 @@
+# Pinned Dear ImGui upstream ref — consumed by CMakeLists.txt FetchContent.
+# Bump via the imgui-cpp:imgui-pin skill or hand-edit + run cmake reconfigure.
+v1.92.7-docking

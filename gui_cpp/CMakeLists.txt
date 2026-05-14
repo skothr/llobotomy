@@ -25,8 +25,23 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET glfw3)
 find_package(OpenGL REQUIRED)
 
-# Vendored Dear ImGui (libs/imgui, v1.92.7 docking).
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/imgui)
+# Dear ImGui — pinned via CMake FetchContent.  Tag in `.imgui-version`;
+# override at configure-time with -DIMGUI_FETCH_REF=<tag> or point at an
+# existing local clone with -DIMGUI_LOCAL_DIR=/path/to/imgui (skips fetch).
+if(DEFINED IMGUI_LOCAL_DIR AND EXISTS "${IMGUI_LOCAL_DIR}/imgui.cpp")
+  set(IMGUI_DIR "${IMGUI_LOCAL_DIR}")
+  message(STATUS "Using local Dear ImGui: ${IMGUI_DIR}")
+else()
+  include(FetchContent)
+  set(IMGUI_FETCH_REF "v1.92.7-docking" CACHE STRING "Dear ImGui upstream ref (tag/branch/SHA)")
+  FetchContent_Declare(imgui_upstream
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG ${IMGUI_FETCH_REF}
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(imgui_upstream)
+  set(IMGUI_DIR "${imgui_upstream_SOURCE_DIR}")
+endif()
 add_library(imgui STATIC
   ${IMGUI_DIR}/imgui.cpp
   ${IMGUI_DIR}/imgui_demo.cpp
@@ -105,7 +120,8 @@ target_include_directories(llobotomy PRIVATE src libs)
 target_link_libraries(llobotomy PRIVATE imgui imgui_file_dialog llmengine::llm_engine)
 target_compile_options(llobotomy PRIVATE
   -Wall -Wextra -Wpedantic
-  -Wno-c99-designator
+  # -Wno-c99-designator is clang-only; gcc warns "unrecognized option" per TU.
+  $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-c99-designator>
 )
 if(LLOB_USE_MOCK_DATA)
   target_compile_definitions(llobotomy PRIVATE LLOB_USE_MOCK_DATA=1)
