@@ -53,6 +53,7 @@
 #include <ggml.h>
 #include <ggml-backend.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <memory>
@@ -193,6 +194,24 @@ static bool capture_cb_eval(struct ggml_tensor* t, bool ask, void* user_data)
     // Allocate a single flat buffer and fetch from backend (handles CUDA).
     std::vector<float> flat(static_cast<std::size_t>(n_heads * q_seq * kv_seq));
     ggml_backend_tensor_get(t, flat.data(), 0, total_bytes);
+
+    // ── Head ablation: zero out ablated heads' attention rows ────────────
+    // For every (layer, head) in cap->ablated_heads matching this layer,
+    // zero the head's [q_seq, kv_seq] slice in the CPU buffer, then write
+    // back to the backend so downstream attention computations see zero
+    // weights for those heads — this actually modifies the forward pass,
+    // not just the captured snapshot.
+    bool ablated_any = false;
+    for (int64_t h = 0; h < n_heads; ++h) {
+        if (cap->ablated_heads.count({layer, static_cast<int>(h)}) == 0) continue;
+        std::size_t head_offset = static_cast<std::size_t>(h * q_seq * kv_seq);
+        std::fill_n(flat.begin() + static_cast<std::ptrdiff_t>(head_offset),
+                    static_cast<std::size_t>(q_seq * kv_seq), 0.0f);
+        ablated_any = true;
+    }
+    if (ablated_any) {
+        ggml_backend_tensor_set(t, flat.data(), 0, total_bytes);
+    }
 
     // Split per head and store in CaptureBundle.
     for (int64_t h = 0; h < n_heads; ++h) {

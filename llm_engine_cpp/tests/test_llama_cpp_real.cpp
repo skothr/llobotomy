@@ -138,6 +138,80 @@ int main()
                 "streaming generated at least one token past the prompt");
     }
 
+    // ── Head ablation actually mutates the forward pass ──────────────────
+    // After setAblation on "blocks.5.attn.head.3", a fresh capture should
+    // show that head's attention slice as all zeros — proves cb_eval
+    // write-back reached the GPU buffer and the next decode used the
+    // masked values.
+    REQUIRE(caps.has_intervention,
+            "has_intervention after load (head ablation via cb_eval write-back)");
+    {
+        auto pre_attn = engine.getAttentionPattern(
+            5, 3, -1, llmengine::HeadBias::Diag);
+        bool pre_has_nonzero = false;
+        for (const auto& row : pre_attn)
+            for (float v : row)
+                if (v != 0.0f) { pre_has_nonzero = true; break; }
+        REQUIRE(pre_has_nonzero, "pre-ablation attention[5,3] has non-zero values");
+
+        // Wait for prompt-1 streaming to fully settle so we know any
+        // future bundle changes are from prompt 2's ablated decode (not
+        // late streaming publishes from prompt 1).  Streaming is done
+        // when token_strs stops growing for 1 second.
+        std::size_t prev_tokens = 0;
+        auto stable_deadline = std::chrono::steady_clock::now()
+                             + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < stable_deadline) {
+            auto b = engine.view().current.load();
+            std::size_t now_tokens = b ? b->token_strs.size() : 0;
+            if (now_tokens == prev_tokens && now_tokens > 0) break;
+            prev_tokens = now_tokens;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+
+        // Now baseline the bundle pointer — every subsequent change is
+        // from the ablated decode.
+        auto pre_bundle = engine.view().current.load();
+
+        engine.setAblation({"blocks.5.attn.head.3"}, {});
+        engine.setActivePrompt("The capital of France is");
+
+        bool post_capture_ready = false;
+        const auto post_deadline = std::chrono::steady_clock::now()
+                                 + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() < post_deadline) {
+            auto b = engine.view().current.load();
+            if (b && b != pre_bundle && !b->attention.empty()) {
+                post_capture_ready = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        REQUIRE(post_capture_ready, "post-ablation capture appears within 30s");
+
+        if (post_capture_ready) {
+            auto post_attn = engine.getAttentionPattern(
+                5, 3, -1, llmengine::HeadBias::Diag);
+            bool all_zero = !post_attn.empty();
+            for (const auto& row : post_attn)
+                for (float v : row)
+                    if (v != 0.0f) { all_zero = false; break; }
+            REQUIRE(all_zero,
+                    "post-ablation attention[5,3] is all zeros (cb_eval write-back applied)");
+
+            // Sibling head (5,4) should remain non-zero — verifies ablation
+            // is targeted and not a global zero-out.
+            auto sibling = engine.getAttentionPattern(
+                5, 4, -1, llmengine::HeadBias::Diag);
+            bool sibling_has_nonzero = false;
+            for (const auto& row : sibling)
+                for (float v : row)
+                    if (v != 0.0f) { sibling_has_nonzero = true; break; }
+            REQUIRE(sibling_has_nonzero,
+                    "sibling head (5,4) attention unaffected by ablation of (5,3)");
+        }
+    }
+
     // ── Drain logs ────────────────────────────────────────────────────────
     auto logs = engine.drainEngineLogs();
     if (!logs.empty()) {

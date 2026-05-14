@@ -19,6 +19,7 @@
 // keeps the headers available wherever they're needed.
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <utility>
 
 #ifdef LLM_ENGINE_HAVE_LLAMA_CPP
@@ -75,6 +76,14 @@ struct LlamaCppEngine::Impl {
     // Progress for heavy load.
     mutable std::mutex prog_mu;
     Model::Progress    progress;
+
+    // Intervention state — head ablations applied to every subsequent
+    // forward pass.  Updated by setAblation under mu; snapshotted into
+    // LlamaCaptureCtx::ablated_heads when each capture starts so the hot
+    // path (cb_eval) doesn't need to lock.  Component ablation and
+    // steering are recorded into view.surgery but not yet applied to
+    // the forward pass — logged as warn on first call.
+    std::set<std::pair<int, int>> ablated_heads;
 
     // ── Lifecycle ──────────────────────────────────────────────────────
     Impl() = default;
@@ -308,7 +317,7 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
             .has_logit_lens   = true,    // logits captured post-decode
             .has_token_stream = true,    // greedy generation loop, up to 24 tokens
             .has_captures     = true,
-            .has_intervention = false,   // future — needs custom forward
+            .has_intervention = true,    // head ablation via cb_eval write-back
             .has_weight_deltas= false,
             .has_training     = false,
         };
@@ -350,6 +359,78 @@ void LlamaCppEngine::setActivePrompt(std::string_view prompt)
         m_impl->has_pending    = true;
     }
     m_impl->wake_cv.notify_one();
+}
+
+// ── setAblation / setSteering / clearSteering ────────────────────────────────
+
+void LlamaCppEngine::setAblation(
+    const std::vector<std::string>& head_canonical,
+    const std::vector<std::string>& component_canonical)
+{
+    // Parse canonical strings into (layer, head) pairs.  Update Impl's
+    // ablation set + view.surgery under the same lock.  The next decode
+    // picks up the set into cap_ctx.ablated_heads (snapshot pattern keeps
+    // cb_eval lock-free).
+    std::set<std::pair<int, int>> new_heads;
+    std::vector<AttentionHeadRef> head_refs;
+    head_refs.reserve(head_canonical.size());
+    for (const auto& s : head_canonical) {
+        auto parsed = AttentionHeadRef::parse(s);
+        if (!parsed) {
+            m_impl->pushLog(Severity::Warn,
+                "setAblation: skipping malformed head canonical '" + s + "'");
+            continue;
+        }
+        new_heads.insert({parsed->layer, parsed->head});
+        head_refs.push_back(*parsed);
+    }
+
+    std::vector<ComponentRef> comp_refs;
+    comp_refs.reserve(component_canonical.size());
+    for (const auto& s : component_canonical) {
+        auto parsed = ComponentRef::parse(s);
+        if (!parsed) {
+            m_impl->pushLog(Severity::Warn,
+                "setAblation: skipping malformed component canonical '" + s + "'");
+            continue;
+        }
+        comp_refs.push_back(*parsed);
+    }
+
+    if (!comp_refs.empty()) {
+        // Component ablation isn't wired into cb_eval yet — record into
+        // view.surgery for the path API + UI but log warn so users know
+        // the forward pass won't reflect it until that's implemented.
+        m_impl->pushLog(Severity::Warn,
+            "setAblation: component ablation recorded but NOT applied "
+            "to forward pass yet (only head ablation is wired)");
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_impl->mu);
+        m_impl->ablated_heads = std::move(new_heads);
+        m_impl->view.surgery.ablated_heads      = std::move(head_refs);
+        m_impl->view.surgery.ablated_components = std::move(comp_refs);
+    }
+}
+
+void LlamaCppEngine::setSteering(const SteeringConfig& cfg)
+{
+    // Steering not yet wired into cb_eval — would require identifying
+    // the target layer's residual stream tensor (`l_out-{L}`) and adding
+    // a fixed-direction vector after each step.  Record into view.surgery
+    // for honest reporting; log warn so users know it's a no-op.
+    m_impl->pushLog(Severity::Warn,
+        "setSteering: recorded into view.surgery but NOT applied to "
+        "forward pass yet (intervention iteration covers head ablation only)");
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    m_impl->view.surgery.steering = cfg;
+}
+
+void LlamaCppEngine::clearSteering()
+{
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    m_impl->view.surgery.steering = SteeringConfig{};
 }
 
 // ── getAttentionPattern ───────────────────────────────────────────────────────
@@ -589,6 +670,14 @@ void LlamaCppEngine::Impl::workerRun()
         cap_ctx.n_heads  = n_heads;
         cap_ctx.n_seq    = n;
         cap_ctx.bundle   = std::make_shared<CaptureBundle>();
+
+        // Snapshot the engine's intervention set into cap_ctx so the
+        // hot path (cb_eval, called per-tensor per-decode) doesn't need
+        // to lock.
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            cap_ctx.ablated_heads = ablated_heads;
+        }
 
         // Decode token strings for the bundle.
         cap_ctx.bundle->token_ids.reserve(static_cast<std::size_t>(n));

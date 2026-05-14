@@ -15,9 +15,13 @@
 //                   callback fills an in-progress CaptureBundle on each
 //                   tensor compute; atomic-stores the bundle after decode.
 //
-// Capabilities (this iteration):
-//   has_topology, has_tokenizer, has_captures, has_attention = true
-//   has_intervention, has_token_stream = false (future work)
+// Capabilities (post-load):
+//   has_topology, has_tokenizer, has_captures, has_attention,
+//   has_residual, has_logit_lens, has_state_dict, has_token_stream,
+//   has_intervention = true.
+//   has_intervention covers head ablation only — steering vector
+//   addition is logged as a no-op (future work).
+//   has_weight_deltas, has_training = false.
 
 #include "llm_engine/model.hpp"
 
@@ -49,6 +53,16 @@ public:
     // Prompt submission — copies the prompt string and wakes the engine
     // thread to run a forward pass + capture.
     void setActivePrompt(std::string_view prompt) override;
+
+    // Intervention — head ablation modifies the next forward pass's
+    // kq_soft_max-{L} tensors in cb_eval (zeroes out ablated heads via
+    // ggml_backend_tensor_set write-back).  Component ablation and
+    // steering vectors are recorded into view.surgery but not yet
+    // applied to the forward pass (logged as a warn).
+    void setAblation(const std::vector<std::string>& head_canonical,
+                     const std::vector<std::string>& component_canonical) override;
+    void setSteering(const SteeringConfig& cfg) override;
+    void clearSteering() override;
 
     // Attention pattern from the most-recent capture.  Returns {} until a
     // forward pass has completed.

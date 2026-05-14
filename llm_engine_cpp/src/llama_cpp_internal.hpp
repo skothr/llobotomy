@@ -9,6 +9,8 @@
 
 #include <functional>
 #include <memory>
+#include <set>
+#include <utility>
 #include <vector>
 
 // Forward-declare llama.cpp opaque types in the global namespace.
@@ -31,6 +33,14 @@ struct LlamaCaptureCtx {
     // multi-position prompt attention with a degenerate 1×1 view).  The
     // streaming loop still updates token_strs/ids and logits per step.
     bool freeze_layer_writes = false;
+
+    // Head ablations applied to this decode.  Snapshot of the engine's
+    // intervention set at decode start (copied into cap_ctx by workerRun).
+    // For each (layer, head) entry, cb_eval zeroes that head's row in the
+    // kq_soft_max-{layer} tensor via ggml_backend_tensor_set write-back
+    // BEFORE downstream ops consume it — actually modifying the forward
+    // pass, not just the captured snapshot.
+    std::set<std::pair<int, int>> ablated_heads;
 };
 
 // Executes one forward pass with activation capture.  When
