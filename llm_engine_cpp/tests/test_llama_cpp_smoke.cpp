@@ -86,7 +86,7 @@ void test_capabilities()
     REQUIRE(!caps.has_logit_lens,   "has_logit_lens false before load");
     REQUIRE(!caps.has_captures,     "has_captures false before load");
     REQUIRE(!caps.has_intervention, "has_intervention false before load (future work)");
-    REQUIRE(!caps.has_token_stream, "has_token_stream false before load (future work)");
+    REQUIRE(!caps.has_token_stream, "has_token_stream false before load (true post-load: greedy gen loop)");
 }
 
 // ── Test 6: view() topology clears after unload ───────────────────────────────

@@ -122,6 +122,12 @@ static bool capture_cb_eval(struct ggml_tensor* t, bool ask, void* user_data)
     auto* cap = static_cast<LlamaCaptureCtx*>(user_data);
     if (!cap || !cap->bundle) return true;
 
+    // During streaming decodes (post-prefill), skip per-layer writes —
+    // preserve the prefill snapshot so the UI keeps showing the full
+    // prompt's attention pattern.  Logits + token_strs are still updated
+    // per step by the streaming loop in llama_cpp_run_capture itself.
+    if (cap->freeze_layer_writes) return true;
+
     const char* tname = ggml_get_name(t);
     if (!tname || tname[0] == '\0') return true;
 
@@ -227,7 +233,9 @@ void llama_cpp_run_capture(
     const std::vector<int32_t>& token_ids,
     int                         /*n_heads*/,
     LlamaCaptureCtx*            cap_ctx,
-    std::vector<LogEntry>&      out_logs)
+    std::vector<LogEntry>&      out_logs,
+    int                         max_generation_tokens,
+    PublishStepFn               publish_step)
 {
     // Clear KV cache from any prior run.
     llama_memory_t mem = llama_get_memory(ctx);
@@ -296,27 +304,87 @@ void llama_cpp_run_capture(
         out_logs.push_back(std::move(e));
     }
 
-    // ── Post-decode logits capture ───────────────────────────────────────
-    // llama_get_logits returns a pointer to the logits buffer for the last
-    // decoded position(s).  Vocab dim comes from the model.  Stash into
-    // CaptureBundle::logits as an InMemoryTensorSource-backed handle so
-    // getOutputLogits() can read it via the substrate's read_slice API.
+    // ── Helper: capture logits from tmp_ctx into a bundle ────────────────
+    const llama_vocab* vocab = llama_model_get_vocab(lm);
+    const int n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 0;
+    auto stash_logits = [&](CaptureBundle& b) {
+        const float* lp = llama_get_logits(tmp_ctx);
+        if (!lp || n_vocab <= 0) return;
+        std::vector<float> data(lp, lp + n_vocab);
+        auto src = InMemoryTensorSource::from_floats(std::move(data));
+        TensorHandle th;
+        th.source      = std::move(src);
+        th.name        = "logits";
+        th.dtype       = DType::F32;
+        th.shape       = {1, n_vocab};
+        th.byte_offset = 0;
+        th.byte_length = static_cast<std::size_t>(n_vocab) * sizeof(float);
+        th.contiguous  = true;
+        b.logits = std::move(th);
+    };
+
+    // ── Post-decode logits capture (prompt prefill) ──────────────────────
     if (cap_ctx && cap_ctx->bundle && ret == 0) {
-        const llama_vocab* vocab = llama_model_get_vocab(lm);
-        const int n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 0;
-        const float* logits_ptr = llama_get_logits(tmp_ctx);
-        if (logits_ptr && n_vocab > 0) {
-            std::vector<float> data(logits_ptr, logits_ptr + n_vocab);
-            auto src = InMemoryTensorSource::from_floats(std::move(data));
-            TensorHandle th;
-            th.source      = std::move(src);
-            th.name        = "logits";
-            th.dtype       = DType::F32;
-            th.shape       = {1, n_vocab};  // [last_seq=1, vocab]
-            th.byte_offset = 0;
-            th.byte_length = static_cast<std::size_t>(n_vocab) * sizeof(float);
-            th.contiguous  = true;
-            cap_ctx->bundle->logits = std::move(th);
+        stash_logits(*cap_ctx->bundle);
+    }
+
+    // ── Token-streaming generation loop (optional) ───────────────────────
+    // After the prompt prefill, optionally sample greedily up to
+    // `max_generation_tokens` more tokens.  Each step:
+    //   1. sample next token from the bundle's current logits
+    //   2. clone the bundle and append the new token
+    //   3. swap cap_ctx->bundle to the new clone so cb_eval writes there
+    //   4. decode the single new token (cb_eval fills the new bundle's
+    //      attention/residual entries for the latest position)
+    //   5. stash post-decode logits into the new bundle
+    //   6. call publish_step(new_bundle) so the UI sees the streamed token
+    //
+    // Bundle copy per step keeps the previously-published bundle immutable
+    // for any UI thread still holding a shared_ptr to it.
+    if (ret == 0 && cap_ctx && cap_ctx->bundle && max_generation_tokens > 0 && vocab) {
+        // Freeze per-layer writes from this point on — the prefill snapshot
+        // is what the UI wants to inspect; streaming decodes only update
+        // tokens + logits, not attention/residual maps.
+        cap_ctx->freeze_layer_writes = true;
+
+        llama_sampler* smpl = llama_sampler_init_greedy();
+        if (!smpl) {
+            LogEntry e; e.ts_ms=0; e.sev=Severity::Warn; e.kind="llama_cpp";
+            e.msg = "llama_sampler_init_greedy returned null; streaming skipped";
+            out_logs.push_back(std::move(e));
+        } else {
+            int generated = 0;
+            while (generated < max_generation_tokens) {
+                const llama_token next = llama_sampler_sample(smpl, tmp_ctx, -1);
+                if (llama_vocab_is_eog(vocab, next)) break;
+
+                auto new_bundle = std::make_shared<CaptureBundle>(*cap_ctx->bundle);
+                new_bundle->token_ids.push_back(next);
+                char tbuf[256] = {};
+                int nn = llama_token_to_piece(vocab, next, tbuf, sizeof(tbuf) - 1, 0, true);
+                new_bundle->token_strs.push_back(
+                    (nn > 0) ? std::string(tbuf, static_cast<std::size_t>(nn)) : "");
+
+                cap_ctx->bundle = new_bundle;
+
+                std::vector<llama_token> one = {next};
+                llama_batch nb = llama_batch_get_one(one.data(), 1);
+                int rr = llama_decode(tmp_ctx, nb);
+                if (rr != 0) {
+                    LogEntry e; e.ts_ms=0; e.sev=Severity::Warn; e.kind="llama_cpp";
+                    e.msg = "llama_decode (streaming) returned " + std::to_string(rr);
+                    out_logs.push_back(std::move(e));
+                    break;
+                }
+
+                stash_logits(*new_bundle);
+
+                if (publish_step) {
+                    publish_step(std::const_pointer_cast<const CaptureBundle>(new_bundle));
+                }
+                ++generated;
+            }
+            llama_sampler_free(smpl);
         }
     }
 

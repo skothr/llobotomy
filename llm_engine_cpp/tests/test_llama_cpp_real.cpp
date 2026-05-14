@@ -75,6 +75,7 @@ int main()
     REQUIRE(caps.has_topology, "has_topology after load");
     REQUIRE(caps.has_attention, "has_attention after load");
     REQUIRE(caps.has_state_dict, "has_state_dict after load (parallel GGUF parse)");
+    REQUIRE(caps.has_token_stream, "has_token_stream after load (greedy gen loop)");
 
     // ── State dict (parallel GGUF parse populates view.tensors) ───────────
     // LlamaCppEngine doesn't get tensor enumeration from llama.cpp's public
@@ -126,6 +127,15 @@ int main()
             for (const auto& t : toks) std::fprintf(stdout, "[%s]", t.c_str());
             std::fprintf(stdout, "\n");
         }
+
+        // ── Token streaming check ──────────────────────────────────────────
+        // Prompt was "The capital of France is" = 6 tokens.  After greedy
+        // generation, expect at least one more token (the model should
+        // produce " Paris" or similar).  Either streaming generated tokens
+        // OR EOS hit immediately — verify the former by counting tokens
+        // beyond the prompt.
+        REQUIRE(toks.size() > 6,
+                "streaming generated at least one token past the prompt");
     }
 
     // ── Drain logs ────────────────────────────────────────────────────────

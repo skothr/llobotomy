@@ -306,7 +306,7 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
             .has_attention    = true,
             .has_residual     = true,    // cb_eval captures l_out-{N}
             .has_logit_lens   = true,    // logits captured post-decode
-            .has_token_stream = false,   // future — needs llama_decode loop
+            .has_token_stream = true,    // greedy generation loop, up to 24 tokens
             .has_captures     = true,
             .has_intervention = false,   // future — needs custom forward
             .has_weight_deltas= false,
@@ -602,10 +602,25 @@ void LlamaCppEngine::Impl::workerRun()
         }
 
         std::vector<LogEntry> out_logs;
-        llama_cpp_run_capture(ctx_snap, lm_snap, token_ids,
-                              n_heads, &cap_ctx, out_logs);
 
-        // Atomic-store the completed bundle.
+        // Per-token streaming: publish each intermediate bundle to
+        // view.current so the UI can render tokens as they're generated.
+        // The capture function copies the bundle per step (immutable
+        // publish — see capture.cpp).
+        auto publish_step = [this](std::shared_ptr<const CaptureBundle> b) {
+            view.current.store(std::move(b));
+        };
+
+        // Hardcoded for MVP; future: setMaxGenerationTokens() mutator.
+        constexpr int kMaxGenerationTokens = 24;
+
+        llama_cpp_run_capture(ctx_snap, lm_snap, token_ids,
+                              n_heads, &cap_ctx, out_logs,
+                              kMaxGenerationTokens, publish_step);
+
+        // Atomic-store the final bundle (covers the no-streaming case and
+        // ensures the post-loop state is published even if publish_step
+        // wasn't called for some reason).
         {
             auto bundle_ptr = std::const_pointer_cast<const CaptureBundle>(
                 cap_ctx.bundle);
