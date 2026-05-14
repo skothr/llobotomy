@@ -6,6 +6,7 @@
 #include "ui/chrome.hpp"
 
 #include "llm_engine/model.hpp"
+#include "llm_engine/model_view.hpp"   // ModelView::current for DrawPromptInput's "capturing" indicator
 
 #include <algorithm>
 #include <chrono>
@@ -530,8 +531,29 @@ bool DrawPromptInput(AppState& s, llmengine::Model& m) {
 
     const bool can_submit = s.hasModel();
 
+    // Detect "capturing" state: prompt submitted, engine hasn't published
+    // a new bundle yet.  Compare current bundle pointer to the snapshot
+    // taken at submit.  As soon as the engine swaps in a new shared_ptr
+    // the pointers differ and we exit the in-flight state.
+    const auto cur_bundle_sp = m.view().current.load();
+    const void* cur_ptr      = static_cast<const void*>(cur_bundle_sp.get());
+    const bool capturing     = can_submit
+                            && !s.lastSubmittedPrompt.empty()
+                            && cur_ptr == s.lastSeenBundlePtr;
+
     if (!can_submit) {
         ImGui::TextDisabled("Load a checkpoint to submit prompts (File > Open).");
+    } else if (capturing) {
+        const auto now   = std::chrono::steady_clock::now();
+        const auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               now - s.promptSubmittedAt).count();
+        const double sec = double(ms) / 1000.0;
+        // 3-char animated spinner, ~400ms per step.
+        static const char* spinner[] = {".  ", ".. ", "...", " ..", "  .", "   "};
+        const int frame = int((ms / 250) % 6);
+        ImGui::PushStyleColor(ImGuiCol_Text, Sty().accent);
+        ImGui::Text("capturing%s  (%.1fs elapsed)", spinner[frame], sec);
+        ImGui::PopStyleColor();
     } else if (!s.lastSubmittedPrompt.empty()) {
         const auto now   = std::chrono::steady_clock::now();
         const auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -600,6 +622,10 @@ bool DrawPromptInput(AppState& s, llmengine::Model& m) {
 
         s.lastSubmittedPrompt = s.promptDraft;
         s.promptSubmittedAt   = std::chrono::steady_clock::now();
+        // Snapshot the current bundle pointer BEFORE the engine kicks
+        // off capture — the in-flight state ends when this no longer
+        // matches view().current.
+        s.lastSeenBundlePtr   = static_cast<const void*>(m.view().current.load().get());
         m.setActivePrompt(s.promptDraft);
         LLOB_LOG_INFO("prompt", "setActivePrompt: %zu chars", s.promptDraft.size());
         return true;

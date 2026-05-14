@@ -233,6 +233,19 @@ void SubmitFineTunePanels(AppState& s, Model& m) {
         ImGui::End();
         return;
     }
+    // Capability gate — finetune is a training-capable operation
+    // (LoRA application, layer freezing, diff runs).  Reuses has_training
+    // because no backend supports finetune without supporting training;
+    // split into a has_finetune capability if that ever changes.
+    if (!m.getCapabilities().has_training) {
+        if (ImGui::Begin("ft.lora_config", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't run finetuning — needs\n"
+                "// has_training (libtorch / Wave E when it lands).");
+        }
+        ImGui::End();
+        return;
+    }
     static std::unordered_set<int> frozen{0, 1, 2, 3};
     if (ImGui::Begin("ft.lora_config",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawLoRAConfig(m);
     ImGui::End();

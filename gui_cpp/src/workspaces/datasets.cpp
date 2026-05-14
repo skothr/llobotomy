@@ -192,6 +192,26 @@ void SubmitDatasetsPanels(AppState& s, Model& m) {
     static std::string dsName;
     static int         sampleId = 4182;
 
+    if (!s.hasModel()) {
+        if (ImGui::Begin("data.list", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder("// no model loaded — open a checkpoint to browse datasets");
+        }
+        ImGui::End();
+        return;
+    }
+    // Single placeholder when the backend doesn't enumerate datasets.
+    // Previously each sub-panel rendered its own "// no datasets" stub
+    // independently — replaced with one honest workspace-level gate.
+    if (m.getDatasets().empty()) {
+        if (ImGui::Begin("data.list", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't enumerate datasets —\n"
+                "// Model::getDatasets() returned empty.");
+        }
+        ImGui::End();
+        return;
+    }
+
     if (ImGui::Begin("data.list",   nullptr, ImGuiWindowFlags_NoTitleBar)) DrawDatasetList(dsSel, dsName, m);
     ImGui::End();
     if (ImGui::Begin("data.sample", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawSampleBrowser(dsName, sampleId, m);

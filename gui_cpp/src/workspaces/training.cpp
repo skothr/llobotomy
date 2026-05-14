@@ -224,6 +224,19 @@ void SubmitTrainingPanels(AppState& s, Model& m) {
         ImGui::End();
         return;
     }
+    // Capability gate — training panels call training-only engine hooks
+    // (getTrainingState, getTrainingLoss, stepTraining, ...).  Backends
+    // without has_training (LlamaCpp, GgufInspector, HFProxy) would
+    // render empty plots and offer pause/step buttons that no-op.
+    if (!m.getCapabilities().has_training) {
+        if (ImGui::Begin("train.run", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't run training — needs\n"
+                "// has_training (libtorch / Wave E when it lands).");
+        }
+        ImGui::End();
+        return;
+    }
     if (ImGui::Begin("train.run",        nullptr, ImGuiWindowFlags_NoTitleBar)) DrawRunSummary(m);
     ImGui::End();
     if (ImGui::Begin("train.ctrl",       nullptr, ImGuiWindowFlags_NoTitleBar)) DrawControl(s, m);

@@ -146,6 +146,13 @@ struct AppState {
     std::string                                   promptDraft;
     std::string                                   lastSubmittedPrompt;
     std::chrono::steady_clock::time_point         promptSubmittedAt{};
+    // Snapshot of view().current at the moment of last submit.  Compared
+    // against the live pointer in DrawPromptInput each frame: equal means
+    // the engine hasn't published a new capture yet — display the
+    // "capturing..." indicator.  Updated only on submit; intentionally
+    // not refreshed on each new bundle so streaming token publishes
+    // don't reset the snapshot.
+    const void*                                   lastSeenBundlePtr = nullptr;
 
     // Sampler + generation knobs — UI mirror of what's been pushed to
     // Model::setSamplerConfig / setMaxGenerationTokens.  Defaults match
