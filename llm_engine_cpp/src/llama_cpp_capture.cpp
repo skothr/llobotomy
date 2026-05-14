@@ -55,6 +55,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -132,6 +133,39 @@ static bool capture_cb_eval(struct ggml_tensor* t, bool ask, void* user_data)
     const char* tname = ggml_get_name(t);
     if (!tname || tname[0] == '\0') return true;
 
+    // Component ablation — zero an entire attn_out-{L} or ffn_out-{L}
+    // tensor before downstream ops consume it.  Pattern: parse the name
+    // as "{base}-{N}" and check cap->ablated_components for a match.
+    // This block sits BEFORE the capture parsers because we still want
+    // to ablate even when the tensor isn't normally captured.
+    if (!cap->ablated_components.empty()) {
+        // Cheap parse: find the last '-' followed by digits.
+        const std::size_t tn_len = std::strlen(tname);
+        std::size_t dash_pos = std::string::npos;
+        for (std::size_t i = tn_len; i > 0; --i) {
+            if (tname[i - 1] == '-') { dash_pos = i - 1; break; }
+        }
+        if (dash_pos != std::string::npos && dash_pos + 1 < tn_len) {
+            int layer = 0;
+            bool numeric = true;
+            for (std::size_t i = dash_pos + 1; i < tn_len; ++i) {
+                if (tname[i] < '0' || tname[i] > '9') { numeric = false; break; }
+                layer = layer * 10 + (tname[i] - '0');
+            }
+            if (numeric) {
+                std::string base(tname, dash_pos);
+                if (cap->ablated_components.count({layer, base}) > 0) {
+                    if (ask) return true;
+                    if (t->type == GGML_TYPE_F32) {
+                        const std::size_t n_bytes = ggml_nbytes(t);
+                        std::vector<float> zeros(n_bytes / sizeof(float), 0.0f);
+                        ggml_backend_tensor_set(t, zeros.data(), 0, n_bytes);
+                    }
+                }
+            }
+        }
+    }
+
     // Attention: kq_soft_max-{N}
     int attn_layer = parse_kq_softmax_layer(tname);
     // Residual stream: l_out-{N}
@@ -149,6 +183,27 @@ static bool capture_cb_eval(struct ggml_tensor* t, bool ask, void* user_data)
         std::size_t n_elem = static_cast<std::size_t>(d_model * seq);
         std::vector<float> data(n_elem);
         ggml_backend_tensor_get(t, data.data(), 0, n_elem * sizeof(float));
+
+        // Steering — if this layer matches the active steering target
+        // and the direction vector's length equals d_model, add
+        // alpha * direction to every token position's residual row,
+        // then write back to the GPU buffer so downstream layers see
+        // the modified stream.  The captured bundle will therefore
+        // reflect the post-steering residual (honest representation).
+        if (cap->steering.active &&
+            cap->steering_layer == resid_layer &&
+            static_cast<int64_t>(cap->steering.direction.size()) == d_model &&
+            std::isfinite(cap->steering.alpha)) {
+            const float a = cap->steering.alpha;
+            const float* dir = cap->steering.direction.data();
+            for (int64_t tok = 0; tok < seq; ++tok) {
+                float* row = data.data() + tok * d_model;
+                for (int64_t d = 0; d < d_model; ++d) {
+                    row[d] += a * dir[d];
+                }
+            }
+            ggml_backend_tensor_set(t, data.data(), 0, n_elem * sizeof(float));
+        }
 
         auto src = InMemoryTensorSource::from_floats(std::move(data));
         TensorHandle th;

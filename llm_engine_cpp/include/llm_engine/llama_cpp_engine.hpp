@@ -103,6 +103,13 @@ public:
     // Progress (load is heavy; engine thread updates this).
     Progress getProgress() const override;
 
+    // Engine metrics — populates cuda_mem_{used,total}_GB via
+    // ggml_backend_dev_memory on the first GPU backend (covers CUDA,
+    // ROCm, Metal — anything ggml exposes as a GPU device).  device +
+    // dtype strings reflect what llama.cpp loaded.  Other timing
+    // fields remain sentinel until wired.
+    EngineMetrics getEngineMetrics() override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
