@@ -85,6 +85,14 @@ struct LlamaCppEngine::Impl {
     // the forward pass — logged as warn on first call.
     std::set<std::pair<int, int>> ablated_heads;
 
+    // Sampler + generation knobs — updated by setSamplerConfig /
+    // setMaxGenerationTokens, snapshotted into cap_ctx + the capture
+    // call at decode start.  Defaults match the engine's prior
+    // hard-coded behavior (greedy, 24 tokens) so unconfigured consumers
+    // see no behavior change.
+    SamplerConfig sampler_cfg{};
+    int           max_generation_tokens = 24;
+
     // ── Lifecycle ──────────────────────────────────────────────────────
     Impl() = default;
 
@@ -433,6 +441,18 @@ void LlamaCppEngine::clearSteering()
     m_impl->view.surgery.steering = SteeringConfig{};
 }
 
+void LlamaCppEngine::setSamplerConfig(const SamplerConfig& cfg)
+{
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    m_impl->sampler_cfg = cfg;
+}
+
+void LlamaCppEngine::setMaxGenerationTokens(int n)
+{
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    m_impl->max_generation_tokens = std::max(0, n);
+}
+
 // ── getAttentionPattern ───────────────────────────────────────────────────────
 
 std::vector<std::vector<float>>
@@ -671,12 +691,15 @@ void LlamaCppEngine::Impl::workerRun()
         cap_ctx.n_seq    = n;
         cap_ctx.bundle   = std::make_shared<CaptureBundle>();
 
-        // Snapshot the engine's intervention set into cap_ctx so the
-        // hot path (cb_eval, called per-tensor per-decode) doesn't need
-        // to lock.
+        // Snapshot the engine's intervention + sampling state into
+        // cap_ctx so the hot path (cb_eval, called per-tensor per-decode)
+        // doesn't need to lock.
+        int max_gen_snap = 24;
         {
             std::lock_guard<std::mutex> lk(mu);
             cap_ctx.ablated_heads = ablated_heads;
+            cap_ctx.sampler_cfg   = sampler_cfg;
+            max_gen_snap          = max_generation_tokens;
         }
 
         // Decode token strings for the bundle.
@@ -700,12 +723,11 @@ void LlamaCppEngine::Impl::workerRun()
             view.current.store(std::move(b));
         };
 
-        // Hardcoded for MVP; future: setMaxGenerationTokens() mutator.
-        constexpr int kMaxGenerationTokens = 24;
-
+        // max_generation_tokens snapshot taken above under mu; sampler
+        // chain is built from cap_ctx.sampler_cfg inside the capture.
         llama_cpp_run_capture(ctx_snap, lm_snap, token_ids,
                               n_heads, &cap_ctx, out_logs,
-                              kMaxGenerationTokens, publish_step);
+                              max_gen_snap, publish_step);
 
         // Atomic-store the final bundle (covers the no-streaming case and
         // ensures the post-loop state is published even if publish_step

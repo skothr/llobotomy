@@ -6,6 +6,7 @@
 
 #include "llm_engine/capture.hpp"
 #include "llm_engine/log.hpp"
+#include "llm_engine/model.hpp"
 
 #include <functional>
 #include <memory>
@@ -41,6 +42,11 @@ struct LlamaCaptureCtx {
     // BEFORE downstream ops consume it — actually modifying the forward
     // pass, not just the captured snapshot.
     std::set<std::pair<int, int>> ablated_heads;
+
+    // Sampler configuration snapshot.  llama_cpp_run_capture builds a
+    // llama_sampler chain from this for the streaming loop.  Default
+    // (Greedy) matches the engine's prior hard-coded behavior.
+    SamplerConfig sampler_cfg;
 };
 
 // Executes one forward pass with activation capture.  When

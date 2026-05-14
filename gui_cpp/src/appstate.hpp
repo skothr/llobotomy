@@ -147,6 +147,15 @@ struct AppState {
     std::string                                   lastSubmittedPrompt;
     std::chrono::steady_clock::time_point         promptSubmittedAt{};
 
+    // Sampler + generation knobs — UI mirror of what's been pushed to
+    // Model::setSamplerConfig / setMaxGenerationTokens.  Defaults match
+    // the engine's defaults (greedy, 24 tokens).  `samplerDirty` is set
+    // by DrawSamplerControls when the user edits a field; cleared on
+    // Apply (which calls into the engine).
+    llmengine::SamplerConfig                      samplerCfg{};
+    int                                           maxGenerationTokens = 24;
+    bool                                          samplerDirty        = false;
+
     // Logs — capped at 500 in memory; full history goes to a log file
     // (path returned by Logger::path()).  Reads from the UI thread; writes
     // protected by logs_mu so background threads (engine bridge, future

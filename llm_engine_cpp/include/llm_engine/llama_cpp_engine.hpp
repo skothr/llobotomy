@@ -64,6 +64,18 @@ public:
     void setSteering(const SteeringConfig& cfg) override;
     void clearSteering() override;
 
+    // Sampling control — full llama.cpp sampler chain via SamplerConfig
+    // (top-k → top-p → min-p → temperature → mirostat, with optional
+    // greedy override).  The next setActivePrompt call's streaming loop
+    // builds a sampler chain from this config.  Default (greedy) matches
+    // the engine's prior behavior.
+    void setSamplerConfig(const SamplerConfig& cfg) override;
+
+    // Max tokens to generate per prompt — clamps the streaming loop.
+    // Pass <= 0 to disable streaming entirely (only prefill + capture).
+    // Default (when never called) is 24 tokens.
+    void setMaxGenerationTokens(int n) override;
+
     // Attention pattern from the most-recent capture.  Returns {} until a
     // forward pass has completed.
     std::vector<std::vector<float>> getAttentionPattern(

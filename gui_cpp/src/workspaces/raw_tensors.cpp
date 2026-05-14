@@ -251,6 +251,19 @@ void SubmitRawTensorsPanels(AppState& s, Model& m) {
         ImGui::End();
         return;
     }
+    // Capability gate — raw_tensors needs has_state_dict (Gguf,
+    // LlamaCpp, libtorch eventually).  HFProxy doesn't enumerate
+    // tensors today (Python-side weight introspection isn't on the
+    // FastAPI surface), so the panels would render empty.
+    if (s.hasModel() && entries.empty() && !m.getCapabilities().has_state_dict) {
+        if (ImGui::Begin("raw.sd", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+            EmptyStatePlaceholder(
+                "// this backend doesn't enumerate tensors —\n"
+                "// needs has_state_dict (Gguf or LlamaCpp).");
+        }
+        ImGui::End();
+        return;
+    }
     if (ImGui::Begin("raw.sd",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawStateDict(s, m);
     ImGui::End();
     if (ImGui::Begin("raw.view",  nullptr, ImGuiWindowFlags_NoTitleBar)) DrawTensorView(s, m);

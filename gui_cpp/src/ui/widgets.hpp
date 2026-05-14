@@ -146,4 +146,28 @@ void AddDashedLine(ImDrawList* dl, ImVec2 p1, ImVec2 p2, ImU32 col,
 // Returns true if a submit happened this frame.
 bool DrawPromptInput(AppState& s, llmengine::Model& m);
 
+// Sampler + max-tokens controls — exposes the full llama.cpp sampler
+// chain (top-k → top-p → min-p → temperature → mirostat) plus the
+// per-prompt token limit.  Reads/writes AppState::samplerCfg and
+// AppState::maxGenerationTokens.  Sets samplerDirty when the user
+// edits; the Apply button calls m.setSamplerConfig + setMaxGenerationTokens
+// and clears the dirty flag.
+//
+// Backends that don't generate (Gguf, HFProxy without WS streaming)
+// will see no-op setters and the controls behave the same — the UI
+// doesn't need to know which backend is wired.
+//
+// Returns true if Apply fired this frame.
+bool DrawSamplerControls(AppState& s, llmengine::Model& m);
+
+// Head grid — rows = layers, cols = heads.  Clicking a cell toggles
+// that head's ablation in AppState::ablatedHeads AND pushes the
+// updated set to the engine via m.setAblation (canonical "blocks.{L}
+// .attn.head.{H}" strings).  Visual: ablated heads render as filled
+// black squares; active head (s.activeHead at s.activeLayer) gets an
+// accent outline; everything else is the muted base color.
+//
+// Use in attention workspace.  Returns true if any toggle happened.
+bool DrawHeadGrid(AppState& s, llmengine::Model& m);
+
 }  // namespace llob

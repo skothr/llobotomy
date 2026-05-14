@@ -607,6 +607,214 @@ bool DrawPromptInput(AppState& s, llmengine::Model& m) {
     return false;
 }
 
+// ── Sampler controls ───────────────────────────────────────────────────────
+
+bool DrawSamplerControls(AppState& s, llmengine::Model& m) {
+    using SamplerConfig = llmengine::SamplerConfig;
+    auto& cfg = s.samplerCfg;
+
+    const bool can_apply = s.hasModel();
+
+    bool changed = false;
+
+    // ── Method radio ────────────────────────────────────────────────
+    ImGui::PushID("sampler-controls");
+    int method = static_cast<int>(cfg.method);
+    if (ImGui::RadioButton("greedy", &method, static_cast<int>(SamplerConfig::Method::Greedy))) {
+        cfg.method = SamplerConfig::Method::Greedy;
+        changed    = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("sampling", &method, static_cast<int>(SamplerConfig::Method::Sampling))) {
+        cfg.method = SamplerConfig::Method::Sampling;
+        changed    = true;
+    }
+
+    // ── Chain stages (only meaningful when Sampling) ────────────────
+    const bool sampling = (cfg.method == SamplerConfig::Method::Sampling);
+    ImGui::BeginDisabled(!sampling);
+    {
+        if (ImGui::DragInt("top_k", &cfg.top_k, 1.0f, 0, 1000, "%d (0 = off)")) {
+            cfg.top_k = std::max(0, cfg.top_k);
+            changed   = true;
+        }
+        if (ImGui::DragFloat("top_p", &cfg.top_p, 0.005f, 0.0f, 1.0f, "%.3f (1.0 = off)")) {
+            cfg.top_p = std::clamp(cfg.top_p, 0.0f, 1.0f);
+            changed   = true;
+        }
+        if (ImGui::DragFloat("min_p", &cfg.min_p, 0.005f, 0.0f, 1.0f, "%.3f (0.0 = off)")) {
+            cfg.min_p = std::clamp(cfg.min_p, 0.0f, 1.0f);
+            changed   = true;
+        }
+        if (ImGui::DragFloat("temperature", &cfg.temperature, 0.01f, 0.0f, 10.0f, "%.2f")) {
+            cfg.temperature = std::max(0.0f, cfg.temperature);
+            changed         = true;
+        }
+
+        // Mirostat — replaces the temp+dist tail when enabled.
+        const char* miro_labels[] = {"off", "v1", "v2"};
+        if (ImGui::Combo("mirostat", &cfg.mirostat, miro_labels, 3)) {
+            cfg.mirostat = std::clamp(cfg.mirostat, 0, 2);
+            changed      = true;
+        }
+        if (cfg.mirostat != 0) {
+            if (ImGui::DragFloat("mirostat_tau", &cfg.mirostat_tau, 0.05f, 0.1f, 20.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::DragFloat("mirostat_eta", &cfg.mirostat_eta, 0.01f, 0.001f, 1.0f, "%.3f")) {
+                changed = true;
+            }
+        }
+
+        int seed_int = static_cast<int>(cfg.seed);
+        if (ImGui::DragInt("seed", &seed_int, 1.0f, 0, INT32_MAX, "%d")) {
+            cfg.seed = static_cast<std::uint32_t>(std::max(0, seed_int));
+            changed  = true;
+        }
+    }
+    ImGui::EndDisabled();
+
+    // ── Max generation tokens (always editable) ─────────────────────
+    if (ImGui::DragInt("max_tokens", &s.maxGenerationTokens, 1.0f, 0, 4096,
+                       "%d (0 = prefill only)")) {
+        s.maxGenerationTokens = std::max(0, s.maxGenerationTokens);
+        changed               = true;
+    }
+
+    if (changed) s.samplerDirty = true;
+
+    // ── Apply button ────────────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!can_apply || !s.samplerDirty);
+    bool applied = false;
+    if (ImGui::Button("Apply", ImVec2(110, 0))) applied = true;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!can_apply) {
+        ImGui::TextDisabled("(load a checkpoint to apply)");
+    } else if (s.samplerDirty) {
+        ImGui::TextDisabled("(unsaved changes)");
+    } else {
+        ImGui::TextDisabled("(in sync with engine)");
+    }
+
+    ImGui::PopID();
+
+    if (applied) {
+        m.setSamplerConfig(cfg);
+        m.setMaxGenerationTokens(s.maxGenerationTokens);
+        s.samplerDirty = false;
+        LLOB_LOG_INFO("sampler",
+            "setSamplerConfig(method=%s top_k=%d top_p=%.3f min_p=%.3f temp=%.2f mirostat=%d) max_tokens=%d",
+            cfg.method == SamplerConfig::Method::Greedy ? "greedy" : "sampling",
+            cfg.top_k, double(cfg.top_p), double(cfg.min_p),
+            double(cfg.temperature), cfg.mirostat, s.maxGenerationTokens);
+        return true;
+    }
+    return false;
+}
+
+// ── Head grid ──────────────────────────────────────────────────────────────
+
+namespace {
+
+// Convert "L.h" UI keys to canonical "blocks.{L}.attn.head.{H}" strings
+// (the wire format Model::setAblation expects).  Skips malformed keys
+// silently — the engine logs warns for those.
+std::vector<std::string> AblatedHeadsCanonical(const AppState& s) {
+    std::vector<std::string> out;
+    out.reserve(s.ablatedHeads.size());
+    for (const auto& k : s.ablatedHeads) {
+        const auto dot = k.find('.');
+        if (dot == std::string::npos || dot == 0 || dot + 1 >= k.size()) continue;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "blocks.%.*s.attn.head.%s",
+                      static_cast<int>(dot), k.c_str(), k.c_str() + dot + 1);
+        out.emplace_back(buf);
+    }
+    return out;
+}
+
+}  // namespace
+
+bool DrawHeadGrid(AppState& s, llmengine::Model& m) {
+    const int n_layers = s.model.nLayers;
+    const int n_heads  = s.model.nHeads;
+    if (n_layers <= 0 || n_heads <= 0) {
+        ImGui::TextDisabled("// no topology — load a model with non-zero nLayers/nHeads");
+        return false;
+    }
+
+    // Cell sizing — fit to width so the grid is always one block wide.
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    constexpr float kPad      = 1.0f;
+    constexpr float kRowLabel = 28.0f;       // "L 0" gutter on the left
+    const float cell_w = std::max(8.0f,
+        (avail_w - kRowLabel - 2.0f * kPad) / float(n_heads) - kPad);
+    const float cell_h = std::min(cell_w, 18.0f);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col_base    = Sty().accent_dim;
+    const ImU32 col_ablated = IM_COL32(20, 20, 22, 255);
+    const ImU32 col_active  = Sty().accent;
+    const ImU32 col_label   = Sty().text_muted;
+
+    bool any_toggled = false;
+    char hk[16];
+
+    ImGui::PushID("head-grid");
+    for (int L = 0; L < n_layers; ++L) {
+        const ImVec2 row_origin = ImGui::GetCursorScreenPos();
+
+        // Row label "L 03"
+        char lbl[8];
+        std::snprintf(lbl, sizeof lbl, "L%02d", L);
+        dl->AddText({row_origin.x + 2.0f, row_origin.y + 2.0f}, col_label, lbl);
+
+        for (int h = 0; h < n_heads; ++h) {
+            std::snprintf(hk, sizeof hk, "%d.%d", L, h);
+            const bool ablated = s.ablatedHeads.contains(hk);
+            const bool active  = (L == s.activeLayer && h == s.activeHead);
+
+            const float x = row_origin.x + kRowLabel + h * (cell_w + kPad);
+            const float y = row_origin.y;
+            const ImVec2 a{x, y};
+            const ImVec2 b{x + cell_w, y + cell_h};
+
+            dl->AddRectFilled(a, b, ablated ? col_ablated : col_base, 1.0f);
+            if (active) {
+                dl->AddRect(a, b, col_active, 1.0f, 0, 2.0f);
+            }
+
+            // Click hit test — invisible button on top of each cell.
+            ImGui::SetCursorScreenPos(a);
+            ImGui::PushID(L * 4096 + h);
+            if (ImGui::InvisibleButton("c", ImVec2(cell_w, cell_h))) {
+                s.toggleAblate(hk);
+                s.activeLayer = L;
+                s.activeHead  = h;
+                any_toggled   = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("L%d head %d%s — click to %s",
+                                  L, h, ablated ? " (ablated)" : "",
+                                  ablated ? "restore" : "ablate");
+            }
+            ImGui::PopID();
+        }
+        ImGui::SetCursorScreenPos({row_origin.x, row_origin.y + cell_h + kPad});
+    }
+    ImGui::PopID();
+
+    if (any_toggled) {
+        // Push the updated ablation set to the engine.  Real backends
+        // (LlamaCpp) translate this into cb_eval GPU write-back; others
+        // record into view.surgery for honest UI reporting.
+        m.setAblation(AblatedHeadsCanonical(s), {});
+    }
+    return any_toggled;
+}
+
 // ── Dashed line ────────────────────────────────────────────────────────────
 
 void AddDashedLine(ImDrawList* dl, ImVec2 p1, ImVec2 p2, ImU32 col,
