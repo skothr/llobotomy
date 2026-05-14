@@ -366,10 +366,61 @@ void llama_cpp_run_capture(
         // tokens + logits, not attention/residual maps.
         cap_ctx->freeze_layer_writes = true;
 
-        llama_sampler* smpl = llama_sampler_init_greedy();
+        // Build the sampler chain from cap_ctx->sampler_cfg.  Greedy is
+        // a single-stage shortcut; Sampling builds the full chain
+        // top_k → top_p → min_p → temperature → (mirostat or dist),
+        // skipping stages at their identity values.
+        const auto& cfg = cap_ctx->sampler_cfg;
+        llama_sampler* smpl = nullptr;
+        if (cfg.method == SamplerConfig::Method::Greedy) {
+            smpl = llama_sampler_init_greedy();
+        } else {
+            auto sparams = llama_sampler_chain_default_params();
+            smpl = llama_sampler_chain_init(sparams);
+            if (smpl) {
+                if (cfg.top_k > 0) {
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_top_k(cfg.top_k));
+                }
+                if (cfg.top_p < 1.0f) {
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_top_p(cfg.top_p, 1));
+                }
+                if (cfg.min_p > 0.0f) {
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_min_p(cfg.min_p, 1));
+                }
+                if (cfg.mirostat == 1) {
+                    if (cfg.temperature != 1.0f) {
+                        llama_sampler_chain_add(smpl,
+                            llama_sampler_init_temp(cfg.temperature));
+                    }
+                    const int n_vocab = llama_vocab_n_tokens(vocab);
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_mirostat(
+                            static_cast<int32_t>(n_vocab), cfg.seed,
+                            cfg.mirostat_tau, cfg.mirostat_eta, 100));
+                } else if (cfg.mirostat == 2) {
+                    if (cfg.temperature != 1.0f) {
+                        llama_sampler_chain_add(smpl,
+                            llama_sampler_init_temp(cfg.temperature));
+                    }
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_mirostat_v2(
+                            cfg.seed, cfg.mirostat_tau, cfg.mirostat_eta));
+                } else {
+                    if (cfg.temperature != 1.0f) {
+                        llama_sampler_chain_add(smpl,
+                            llama_sampler_init_temp(cfg.temperature));
+                    }
+                    llama_sampler_chain_add(smpl,
+                        llama_sampler_init_dist(cfg.seed));
+                }
+            }
+        }
         if (!smpl) {
             LogEntry e; e.ts_ms=0; e.sev=Severity::Warn; e.kind="llama_cpp";
-            e.msg = "llama_sampler_init_greedy returned null; streaming skipped";
+            e.msg = "sampler chain init returned null; streaming skipped";
             out_logs.push_back(std::move(e));
         } else {
             int generated = 0;

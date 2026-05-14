@@ -200,6 +200,41 @@ struct SteeringConfig {
     float       cos_sim  = kNoFloat;
 };
 
+// Sampler configuration consumed by Model::setSamplerConfig.  Describes
+// the full llama.cpp sampler chain.  All fields are interpreted by the
+// backend's setter — the substrate just stores the description.
+//
+// Default-constructed value reproduces greedy sampling (the engine's
+// pre-config behavior) so unspecified consumers keep the old semantics.
+struct SamplerConfig {
+    // Top-level method.  When Greedy, the chain fields below are
+    // ignored (LlamaCppEngine uses llama_sampler_init_greedy directly).
+    // When Sampling, the chain is built per the enabled stages.
+    enum class Method { Greedy, Sampling };
+    Method method = Method::Greedy;
+
+    // Truncation / temperature stages — applied in order.  Each is
+    // disabled when at its default ("identity") value:
+    //   * top_k       == 0    → no top-k truncation
+    //   * top_p       == 1.0  → no nucleus truncation
+    //   * min_p       == 0.0  → no min-probability truncation
+    //   * temperature == 1.0  → no temperature scaling
+    int   top_k       = 0;
+    float top_p       = 1.0f;
+    float min_p       = 0.0f;
+    float temperature = 1.0f;
+
+    // Mirostat — 0 = off, 1 = v1, 2 = v2.  When enabled, mirostat owns
+    // the final sampling step (replaces the temp+dist tail of the chain).
+    int   mirostat     = 0;
+    float mirostat_tau = 5.0f;
+    float mirostat_eta = 0.1f;
+
+    // RNG seed used by the dist sampler when Method::Sampling is active.
+    // Ignored under Greedy.
+    std::uint32_t seed = 0xDEADBEEFu;
+};
+
 // ──────────────────────────────────────────────────────────────────────────
 // Attention
 // ──────────────────────────────────────────────────────────────────────────
@@ -620,6 +655,18 @@ struct Model {
                                  [[maybe_unused]] const std::vector<std::string>& component_canonical) {}
     virtual void setSteering    ([[maybe_unused]] const SteeringConfig&   cfg) {}
     virtual void clearSteering  () {}
+
+    // Sampling control — consulted by the engine's generation loop.
+    // Default no-op so backends that don't generate (Gguf, HFProxy) can
+    // ignore.  Backends that DO generate (LlamaCpp) override to install
+    // the new config; subsequent setActivePrompt calls use it.
+    virtual void setSamplerConfig([[maybe_unused]] const SamplerConfig& cfg) {}
+
+    // Max tokens to generate per setActivePrompt call (after the prompt
+    // prefill).  Default 0 leaves the backend's own default in place
+    // (currently 24 for LlamaCpp).  setMaxGenerationTokens(n) clamps
+    // the next decode's generation to n tokens (or EOS, whichever first).
+    virtual void setMaxGenerationTokens([[maybe_unused]] int n) {}
 
     // ── Training workspace ───────────────────────────────────────────────
     virtual TrainingState                   getTrainingState   () { return {}; }
