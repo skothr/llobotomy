@@ -7,7 +7,12 @@
 #include <string_view>
 #include <vector>
 
+// Forward declarations for widgets that need AppState / Model — keeps
+// this header free of the heavier appstate.hpp / model.hpp pulls.
+namespace llmengine { struct Model; }
+
 namespace llob {
+struct AppState;
 
 // All widgets here are stateless ImDrawList paint helpers. They render at the
 // current cursor position and advance it with a Dummy of their own size.
@@ -126,5 +131,19 @@ bool ImSliderF(const char* id, float& value, float minV, float maxV,
 // segment by dash + gap pixels.
 void AddDashedLine(ImDrawList* dl, ImVec2 p1, ImVec2 p2, ImU32 col,
                    float dash = 3.0f, float gap = 2.0f, float thickness = 1.0f);
+
+// Prompt input — the shared "tell the engine what to inspect" widget.
+// Surfaced in inference / attention / probes workspaces (anywhere the
+// user benefits from controlling the active forward pass).  All call
+// sites share AppState::promptDraft so the input state persists across
+// workspace switches.  Submitting calls m.setActivePrompt(text) and
+// updates AppState::lastSubmittedPrompt + promptSubmittedAt.
+//
+// Renders: multi-line input + Submit button.  Ctrl+Enter also submits.
+// When the backend has no model loaded (s.hasModel() == false) the
+// widget renders disabled with a hint to load a checkpoint first.
+//
+// Returns true if a submit happened this frame.
+bool DrawPromptInput(AppState& s, llmengine::Model& m);
 
 }  // namespace llob

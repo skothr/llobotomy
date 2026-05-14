@@ -137,6 +137,16 @@ struct AppState {
     int                       stepIdx        = 11;
     std::chrono::steady_clock::time_point lastStepTime{};
 
+    // Prompt input — shared across inference, attention, and probes
+    // workspaces via the reusable DrawPromptInput widget.  `promptDraft`
+    // is the live editable buffer; `lastSubmittedPrompt` is the most
+    // recent string sent to Model::setActivePrompt (used to detect
+    // "submitted but unchanged" vs "fresh submit").  `promptSubmittedAt`
+    // helps UI show "submitted Xs ago" affordances.
+    std::string                                   promptDraft;
+    std::string                                   lastSubmittedPrompt;
+    std::chrono::steady_clock::time_point         promptSubmittedAt{};
+
     // Logs — capped at 500 in memory; full history goes to a log file
     // (path returned by Logger::path()).  Reads from the UI thread; writes
     // protected by logs_mu so background threads (engine bridge, future

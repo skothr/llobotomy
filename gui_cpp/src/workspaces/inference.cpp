@@ -435,6 +435,16 @@ void BuildInferenceLayout(ImGuiID dock_id) {
 }
 
 void SubmitInferencePanels(AppState& s, Model& m) {
+    // Prompt input — primary control surface for the inference workspace.
+    // Render even when no model is loaded so the widget can show its
+    // "load a checkpoint first" hint and the user can see where prompts
+    // will go once they open a file.
+    if (ImGui::Begin("inf.prompt", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+        DrawTitleBar("prompt", "txt", "", "live");
+        DrawPromptInput(s, m);
+    }
+    ImGui::End();
+
     if (!s.hasModel()) {
         if (ImGui::Begin("inf.resid", nullptr, ImGuiWindowFlags_NoTitleBar)) {
             EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");

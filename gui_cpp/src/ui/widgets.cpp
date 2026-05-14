@@ -1,9 +1,14 @@
 #include "ui/widgets.hpp"
 
+#include "appstate.hpp"
+#include "logger.hpp"
 #include "style.hpp"
 #include "ui/chrome.hpp"
 
+#include "llm_engine/model.hpp"
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -514,6 +519,92 @@ bool ImSliderF(const char* id, float& value, float minV, float maxV,
     ImGui::PopStyleColor(4);
     ImGui::PopID();
     return changed;
+}
+
+// ── Prompt input ───────────────────────────────────────────────────────────
+
+bool DrawPromptInput(AppState& s, llmengine::Model& m) {
+    const float avail_w = ImGui::GetContentRegionAvail().x;
+    const float line_h  = ImGui::GetTextLineHeightWithSpacing();
+    const float input_h = std::clamp(line_h * 4.0f, 60.0f, line_h * 6.0f);
+
+    const bool can_submit = s.hasModel();
+
+    if (!can_submit) {
+        ImGui::TextDisabled("Load a checkpoint to submit prompts (File > Open).");
+    } else if (!s.lastSubmittedPrompt.empty()) {
+        const auto now   = std::chrono::steady_clock::now();
+        const auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               now - s.promptSubmittedAt).count();
+        const double sec = double(ms) / 1000.0;
+        ImGui::TextDisabled("Last submitted %.1fs ago (%zu chars)",
+                            sec, s.lastSubmittedPrompt.size());
+    } else {
+        ImGui::TextDisabled("Enter a prompt; Enter to submit, Ctrl+Enter for newline.");
+    }
+
+    // Ensure capacity for the input buffer.  InputText with the
+    // CallbackResize flag mutates the underlying string through the
+    // callback as the user types past capacity.
+    constexpr std::size_t kMinCap = 256;
+    if (s.promptDraft.capacity() < kMinCap) s.promptDraft.reserve(kMinCap);
+
+    struct CallbackCtx { std::string* str; };
+    auto resize_cb = +[](ImGuiInputTextCallbackData* data) -> int {
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+            auto* ctx = static_cast<CallbackCtx*>(data->UserData);
+            ctx->str->resize(static_cast<std::size_t>(data->BufTextLen));
+            data->Buf = ctx->str->data();
+        }
+        return 0;
+    };
+    CallbackCtx ctx{&s.promptDraft};
+
+    bool submit = false;
+    ImGui::PushID("prompt-input");
+    ImGui::InputTextMultiline(
+        "##draft",
+        s.promptDraft.data(),
+        s.promptDraft.capacity() + 1,
+        ImVec2(avail_w, input_h),
+        ImGuiInputTextFlags_AllowTabInput |
+        ImGuiInputTextFlags_CallbackResize |
+        ImGuiInputTextFlags_CtrlEnterForNewLine,
+        resize_cb,
+        &ctx);
+
+    // Plain Enter (no Ctrl/Shift) while the input is focused → submit.
+    // CtrlEnterForNewLine inverts the default so Ctrl+Enter inserts the
+    // newline and bare Enter is "done".
+    if (ImGui::IsItemFocused() &&
+        ImGui::IsKeyPressed(ImGuiKey_Enter, false) &&
+        !ImGui::GetIO().KeyCtrl &&
+        !ImGui::GetIO().KeyShift) {
+        submit = true;
+    }
+    ImGui::BeginDisabled(!can_submit);
+    if (ImGui::Button("Submit", ImVec2(110, 0))) submit = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(Enter to submit, Ctrl+Enter for newline)");
+    ImGui::EndDisabled();
+    ImGui::PopID();
+
+    if (submit && can_submit) {
+        // Strip the trailing newline the Enter keypress inserted before
+        // our handler observed it.
+        while (!s.promptDraft.empty() &&
+               (s.promptDraft.back() == '\n' || s.promptDraft.back() == '\r')) {
+            s.promptDraft.pop_back();
+        }
+        if (s.promptDraft.empty()) return false;
+
+        s.lastSubmittedPrompt = s.promptDraft;
+        s.promptSubmittedAt   = std::chrono::steady_clock::now();
+        m.setActivePrompt(s.promptDraft);
+        LLOB_LOG_INFO("prompt", "setActivePrompt: %zu chars", s.promptDraft.size());
+        return true;
+    }
+    return false;
 }
 
 // ── Dashed line ────────────────────────────────────────────────────────────
