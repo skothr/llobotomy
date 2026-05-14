@@ -403,6 +403,15 @@ void BuildProbesLayout(ImGuiID dock_id) {
 void SubmitProbesPanels(AppState& s, Model& m) {
     static int  feature = 2381;
     static char filter[64] = {};
+
+    // Prompt input — probes care about features firing against a given
+    // prompt, so the same shared prompt widget belongs here too.
+    if (ImGui::Begin("probes.prompt", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+        DrawTitleBar("prompt", "txt", "", "live");
+        DrawPromptInput(s, m);
+    }
+    ImGui::End();
+
     if (ImGui::Begin("probes.feat_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) DrawFeatureBrowser(s, m, feature, filter);
     ImGui::End();
     if (ImGui::Begin("probes.feat_card",    nullptr, ImGuiWindowFlags_NoTitleBar)) DrawFeatureCard   (feature, m);

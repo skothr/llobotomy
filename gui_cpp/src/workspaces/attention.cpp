@@ -257,6 +257,15 @@ void BuildAttentionLayout(ImGuiID dock_id) {
 }
 
 void SubmitAttentionPanels(AppState& s, Model& m) {
+    // Prompt input — surfaced here so the user can submit prompts
+    // without switching back to the inference workspace.  Same shared
+    // AppState::promptDraft, so edits persist across workspaces.
+    if (ImGui::Begin("attn.prompt", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+        DrawTitleBar("prompt", "txt", "", "live");
+        DrawPromptInput(s, m);
+    }
+    ImGui::End();
+
     if (!s.hasModel()) {
         if (ImGui::Begin("attn.head_browser", nullptr, ImGuiWindowFlags_NoTitleBar)) {
             EmptyStatePlaceholder("// no model loaded — open a checkpoint via File ▸ Open");
