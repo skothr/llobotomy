@@ -123,3 +123,35 @@ into the traced graph to mask a head).
 Recommend **A** despite the LOC cost — the whole point of Wave E
 over HFProxy is the C++-side surgical access. Option B gives you a
 heavier llama.cpp without the activation-capture story.
+
+## Status (2026-05-13): STILL DEFERRED — by design, not abandoned
+
+Reaffirmed during the Wave D extension wave (state_dict, token
+streaming, head ablation).  LlamaCppEngine now covers:
+
+| Capability | LlamaCppEngine (today) | LibtorchEngine (if built) |
+|---|---|---|
+| HF safetensors load | no (GGUF only) | yes |
+| Local inference | yes (CUDA via llama.cpp) | yes |
+| Activation capture | yes (cb_eval, all standard-attention archs) | yes (forward hooks) |
+| State dict enumeration | yes (parallel GGUF parse → view.tensors) | yes |
+| Token streaming | yes (greedy gen loop, 24 tokens) | yes |
+| Head ablation | yes (cb_eval GPU write-back, real fwd-pass mutation) | yes |
+| Steering vector | partial (recorded in view.surgery; not yet wired) | yes |
+| Backward pass / training | no | yes |
+| Custom forward (per-row weight patching) | no | yes |
+
+The gap: **training + truly surgical interventions** (e.g., patching
+a single subspace of W_Q during forward).  Neither has a current
+use case in the llm-surgeon GUI, and adding 1700 LOC for hypothetical
+future use violates YAGNI hard.
+
+Triggers that would justify the cost:
+- A workspace that needs to run a probe training loop in-engine
+  (current llm_surgeon Python toolkit handles this fine).
+- A workspace that needs per-row weight surgery during forward,
+  beyond cb_eval's tensor-level write-back.
+- A user-facing request specifically for safetensors-direct loading
+  without GGUF conversion.
+
+Until then, this plan stays as the implementation contract.
