@@ -1,13 +1,23 @@
 #pragma once
 //
-// Model — abstract data backend for every llobotomy workspace.
+// Model — data backend for every llobotomy workspace.
 //
 // Each method below is a [DATA HOOK]: it tells the engine what the UI needs
-// at that point in time.  The default implementation is `MockModel`, which
-// returns deterministic fake data when `LLOB_USE_MOCK_DATA` is defined and
-// empty / sentinel values otherwise.  A real backend (HuggingFace via the
-// FastAPI bridge, native llama.cpp, libtorch in-process, ...) implements
-// the same interface and the UI never knows the difference.
+// at that point in time.  Model itself is the canonical empty backend —
+// every getter has a default body returning the no-data sentinel for its
+// type.  Concrete backends (HFProxyEngine, GgufInspectorEngine,
+// LlamaCppEngine, ...) inherit Model directly and override only the
+// getters they can actually fulfil from their data source.  Anything they
+// don't override stays honestly empty in the UI.
+//
+// `MockModel` (declared below, defined in mock_model.cpp) is a separate
+// opt-in implementation that returns deterministic fake data when
+// `LLOB_USE_MOCK_DATA` is defined.  It exists for two purposes only:
+//   (a) UI demo / screenshot mode, selected via `LLOB_BACKEND=mock`;
+//   (b) a developer baseline when prototyping new workspace code.
+// Real backends do NOT inherit from MockModel — that pattern caused
+// silent mock-data leakage when a getter wasn't overridden.  The honest
+// empty default + an explicit Capabilities advertisement is the contract.
 //
 // Conventions:
 //   * Vectors return `{}` when no data is available — UI shows empty plot.
@@ -26,11 +36,19 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace llmengine {
+
+// Forward declaration — the unified data structure lives in
+// model_view.hpp (which includes this file to get the DTOs).  Backends
+// own a ModelView and expose it via Model::view(); consumers prefer
+// typed access (`m.view().topology.nLayers`) over the per-DTO getters
+// kept below for source compatibility.
+struct ModelView;
 
 // ── Sentinel values for "no data yet" ─────────────────────────────────────
 inline constexpr float        kNoFloat = std::numeric_limits<float>::quiet_NaN();
@@ -431,45 +449,45 @@ struct Model {
     // and decoding each id.  Default returns empty.
     virtual std::vector<std::string> getCurrentTokens() { return {}; }
 
-    virtual std::vector<ParamBreakdownRow> getParamBreakdown(int layer) = 0;
-    virtual LiveActivations                getLiveActivations(int layer) = 0;
+    virtual std::vector<ParamBreakdownRow> getParamBreakdown([[maybe_unused]] int layer) { return {}; }
+    virtual LiveActivations                getLiveActivations([[maybe_unused]] int layer) { return {}; }
 
     // ── Activations / attention (per forward-pass tick) ──────────────────
     virtual std::vector<std::vector<float>>
-        getAttentionPattern(int layer, int head, int seqLen, HeadBias bias) = 0;
-    virtual std::vector<float> getActivation(int layer, int kind, int n) = 0;
+        getAttentionPattern([[maybe_unused]] int layer, [[maybe_unused]] int head, [[maybe_unused]] int seqLen, [[maybe_unused]] HeadBias bias) { return {}; }
+    virtual std::vector<float> getActivation([[maybe_unused]] int layer, [[maybe_unused]] int kind, [[maybe_unused]] int n) { return {}; }
 
     // ── Per-element norms (used for tinting + bars) ───────────────────────
-    virtual float getHeadNorm     (int layer, int head)              = 0;
-    virtual float getComponentNorm(int layer, std::string_view comp) = 0;
+    virtual float getHeadNorm     ([[maybe_unused]] int layer, [[maybe_unused]] int head) { return kNoFloat; }
+    virtual float getComponentNorm([[maybe_unused]] int layer, [[maybe_unused]] std::string_view comp) { return kNoFloat; }
 
     // ── Inference workspace ──────────────────────────────────────────────
-    virtual ResidualContribution      getResidualContribution(int layer)         = 0;
-    virtual ResidualSummary           getResidualSummary    (int layer)          = 0;
-    virtual std::vector<LogitLensRow> getLogitLensTrajectory(int token, int kLayers) = 0;
-    virtual std::vector<LogitDist>    getOutputLogits       (int k)              = 0;
+    virtual ResidualContribution      getResidualContribution([[maybe_unused]] int layer) { return {}; }
+    virtual ResidualSummary           getResidualSummary    ([[maybe_unused]] int layer) { return {}; }
+    virtual std::vector<LogitLensRow> getLogitLensTrajectory([[maybe_unused]] int token, [[maybe_unused]] int kLayers) { return {}; }
+    virtual std::vector<LogitDist>    getOutputLogits       ([[maybe_unused]] int k) { return {}; }
     virtual std::vector<MlpFeatureActivation>
-                                      getMlpFeatures        (int layer, int k)  = 0;
-    virtual std::vector<float>        getTokenLossPerToken  (int layer)          = 0;
-    virtual std::vector<float>        getSurprisalDelta     ()                   = 0;
-    virtual std::vector<ProbeEntry>   getActiveProbes       ()                   = 0;
-    virtual SteeringConfig            getSteering           ()                   = 0;
+                                      getMlpFeatures        ([[maybe_unused]] int layer, [[maybe_unused]] int k) { return {}; }
+    virtual std::vector<float>        getTokenLossPerToken  ([[maybe_unused]] int layer) { return {}; }
+    virtual std::vector<float>        getSurprisalDelta     () { return {}; }
+    virtual std::vector<ProbeEntry>   getActiveProbes       () { return {}; }
+    virtual SteeringConfig            getSteering           () { return {}; }
 
     // ── Attention workspace ──────────────────────────────────────────────
-    virtual QKVStats                  getQKVStats     (int layer, int head, int token) = 0;
-    virtual std::vector<HeadStatRow>  getHeadStats    (int layer, int head)            = 0;
-    virtual PatchSourceState          getPatchSource  ()                                = 0;
-    virtual HeadBias                  getHeadBias     (int layer, int head)            = 0;
+    virtual QKVStats                  getQKVStats     ([[maybe_unused]] int layer, [[maybe_unused]] int head, [[maybe_unused]] int token) { return {}; }
+    virtual std::vector<HeadStatRow>  getHeadStats    ([[maybe_unused]] int layer, [[maybe_unused]] int head) { return {}; }
+    virtual PatchSourceState          getPatchSource  () { return {}; }
+    virtual HeadBias                  getHeadBias     ([[maybe_unused]] int layer, [[maybe_unused]] int head) { return HeadBias::Diag; }
 
     // ── Probes / SAE workspace ───────────────────────────────────────────
-    virtual std::vector<FeatureSummary> getFeatureLibrary(std::string_view filter) = 0;
-    virtual FeatureCard                 getFeatureCard   (int featureId)            = 0;
-    virtual std::vector<FeatureExample> getFeatureExamples(int featureId, int k)    = 0;
-    virtual std::vector<CoFiringEntry>  getCoFiringFeatures(int featureId, float threshold) = 0;
-    virtual SAETrainingMetrics          getSAETrainingMetrics(std::string_view saeId) = 0;
-    virtual std::vector<ProbeEntry>     getProbeLibrary    ()                       = 0;
-    virtual ProbeTrainState             getProbeTrainState (std::string_view name)  = 0;
-    virtual std::vector<ExportEntry>    getRecentExports   ()                       = 0;
+    virtual std::vector<FeatureSummary> getFeatureLibrary([[maybe_unused]] std::string_view filter) { return {}; }
+    virtual FeatureCard                 getFeatureCard   ([[maybe_unused]] int featureId) { return {}; }
+    virtual std::vector<FeatureExample> getFeatureExamples([[maybe_unused]] int featureId, [[maybe_unused]] int k) { return {}; }
+    virtual std::vector<CoFiringEntry>  getCoFiringFeatures([[maybe_unused]] int featureId, [[maybe_unused]] float threshold) { return {}; }
+    virtual SAETrainingMetrics          getSAETrainingMetrics([[maybe_unused]] std::string_view saeId) { return {}; }
+    virtual std::vector<ProbeEntry>     getProbeLibrary    () { return {}; }
+    virtual ProbeTrainState             getProbeTrainState ([[maybe_unused]] std::string_view name) { return {}; }
+    virtual std::vector<ExportEntry>    getRecentExports   () { return {}; }
 
     // Mutators (no-op when not implemented).  Marked [[maybe_unused]] on
     // params because the base default discards them.
@@ -491,15 +509,124 @@ struct Model {
         bool        ok    = true;
         std::string error;
     };
+
+    // Backend-tunable knobs honoured during loadCheckpoint.  Common keys
+    // are first-class fields; backend-specific options ride in `extras`
+    // (e.g. llama.cpp's `n_ctx`, libtorch's `device`, GGUF's `align`).
+    //
+    // Backends that don't recognise a field MUST silently ignore it —
+    // the same options struct may be used across mock / hf / gguf /
+    // llama / libtorch flows.  This is forward-compat by design:
+    // unknown future fields cause no errors today.
+    struct LoadOptions {
+        std::string mode;          // quant hint: "nf4" | "q4_0" | "fp16" | "" (default)
+        bool        mmap        = true;
+        bool        verify_hash = false;
+        std::vector<std::pair<std::string, std::string>> extras;  // backend-specific kvs
+    };
+
+    // Path-only form — the historical surface; kept as the primary
+    // virtual so existing backends compile unchanged.
     virtual CheckpointResult loadCheckpoint([[maybe_unused]] std::string_view path) { return {}; }
+
+    // Options form — preferred for new backends.  Default impl ignores
+    // options and delegates to the path-only form, so a backend that
+    // doesn't care about options gets correct behaviour for free.
+    virtual CheckpointResult loadCheckpoint(std::string_view path,
+                                            [[maybe_unused]] const LoadOptions& opts) {
+        return loadCheckpoint(path);
+    }
     virtual void             unloadCheckpoint() {}
 
+    // Long-running mutator progress.  Returns an empty Progress when no
+    // work is in flight; otherwise `kind` names the operation
+    // ("load" / "train" / "export") and `step / total` gives the
+    // fraction (total == 0 ⇒ indeterminate progress, UI shows spinner).
+    // Backends increment this from their engine thread; UI reads at
+    // frame rate.  Implementations must make the read cheap and
+    // lock-free if possible (a struct of POD scalars in a mutex-guarded
+    // member is fine — the lock is a few nanoseconds).
+    struct Progress {
+        std::string kind;          // "" ⇒ idle
+        int         step  = 0;
+        int         total = 0;
+    };
+    virtual Progress getProgress() const { return {}; }
+
+    // ── Unified data structure (ModelView) ───────────────────────────────
+    // The canonical accessor. Backends own a ModelView and return it here.
+    // Pure virtual so every backend explicitly commits to a view — even
+    // MockModel's mock-data populator writes into one.  Per-DTO getters
+    // below are kept for source compatibility and prefer reading from
+    // view() where the data is naturally there; backends that prefer to
+    // compute per call still override individual getters.
+    virtual const ModelView& view() const = 0;
+
+    // ── Capabilities advertisement ───────────────────────────────────────
+    // Bit-bag the UI consults to grey out controls a backend can't honour.
+    // Each field is conservative-default-false so a new backend that
+    // forgets to set them simply gets blank panels (preferred to crashing
+    // on a wrong-shaped response).
+    //
+    // ABI policy: fields are append-only.  Re-ordering or removing a
+    // field is a major-version break; adding one is forward-compatible
+    // because downstream code reads named members, not packed bits.
+    struct Capabilities {
+        bool has_topology       = false;
+        bool has_tokenizer      = false;   // encode/decode wired
+        bool has_state_dict     = false;   // tensor enumeration
+        bool has_attention      = false;   // live attention matrices
+        bool has_residual       = false;   // live residual stream
+        bool has_logit_lens     = false;   // per-layer unembed projection
+        bool has_token_stream   = false;   // live generation
+        bool has_captures       = false;   // can run a forward pass at all
+        bool has_intervention   = false;   // setAblation / setSteering honoured
+        bool has_weight_deltas  = false;   // surgery/weight_deltas writeable
+        bool has_training       = false;
+    };
+    virtual Capabilities getCapabilities() const { return {}; }
+
+    // ── New mutators (ENGINE_API.md §7) ──────────────────────────────────
+    // Default no-op so a backend that doesn't support a hook is silent.
+    //
+    //   setActivePrompt — UI invokes when the inference workspace's
+    //                     prompt commits.  Engine kicks off the capture
+    //                     that populates ModelView::current.
+    //                     OWNERSHIP: `prompt` is a borrow; the backend
+    //                     MUST copy if it retains the value beyond this
+    //                     call (e.g. for an async forward pass).
+    //   setAblation     — full set of ablated heads + components.  Called
+    //                     debounced (~200ms) when the UI's ablation set
+    //                     changes; engine masks accordingly.  Heads /
+    //                     components are passed by value (the engine
+    //                     copies internally).
+    //   setSteering /
+    //   clearSteering   — install / remove a steering vector.
+    virtual void setActivePrompt([[maybe_unused]] std::string_view prompt) {}
+
+    // setAblation takes the full set of ablation targets — heads +
+    // components.  Names are canonical-path strings; structured
+    // refs (AttentionHeadRef / ComponentRef in model_view.hpp) have
+    // canonical() helpers that produce these strings, so a typed caller
+    // can do `setAblation({h.canonical()}, {})`.
+    //
+    // String form is the wire format for two reasons: (a) RPC / scripting
+    // callers don't carry the ref types, (b) model.hpp forward-declares
+    // ModelView and pulling the ref types in here would invert the
+    // header layering.  Backends parse / validate the strings themselves
+    // (typically via AttentionHeadRef::parse — returns nullopt on
+    // malformed input, which the backend logs and skips).
+    virtual void setAblation    ([[maybe_unused]] const std::vector<std::string>& head_canonical,
+                                 [[maybe_unused]] const std::vector<std::string>& component_canonical) {}
+    virtual void setSteering    ([[maybe_unused]] const SteeringConfig&   cfg) {}
+    virtual void clearSteering  () {}
+
     // ── Training workspace ───────────────────────────────────────────────
-    virtual TrainingState                   getTrainingState   ()                = 0;
-    virtual std::vector<TrainingMetricCard> getTrainingMetrics ()                = 0;
-    virtual LossCurve                       getTrainingLoss    (int maxSteps)   = 0;
-    virtual std::vector<float>              getGradFlowPerLayer()                = 0;
-    virtual std::vector<std::vector<float>> getPerLayerLoss    (int maxSteps)   = 0;
+    virtual TrainingState                   getTrainingState   () { return {}; }
+    virtual std::vector<TrainingMetricCard> getTrainingMetrics () { return {}; }
+    virtual LossCurve                       getTrainingLoss    ([[maybe_unused]] int maxSteps) { return {}; }
+    virtual std::vector<float>              getGradFlowPerLayer() { return {}; }
+    virtual std::vector<std::vector<float>> getPerLayerLoss    ([[maybe_unused]] int maxSteps) { return {}; }
 
     virtual void resumeTraining() {}
     virtual void pauseTraining()  {}
@@ -508,53 +635,63 @@ struct Model {
     virtual void stopTraining()   {}
 
     // ── Finetune workspace ───────────────────────────────────────────────
-    virtual LoRAConfig          getLoRAConfig     ()                       = 0;
-    virtual OptimizerConfig     getOptimizerConfig()                       = 0;
-    virtual DataConfig          getDataConfig     ()                       = 0;
-    virtual EvalDiffMetric      getEvalDiff       (std::string_view bench) = 0;
-    virtual std::vector<float>  getEvalLossCurve  ()                       = 0;
-    virtual ABSample            getABSample       ()                       = 0;
+    virtual LoRAConfig          getLoRAConfig     () { return {}; }
+    virtual OptimizerConfig     getOptimizerConfig() { return {}; }
+    virtual DataConfig          getDataConfig     () { return {}; }
+    virtual EvalDiffMetric      getEvalDiff       ([[maybe_unused]] std::string_view bench) { return {}; }
+    virtual std::vector<float>  getEvalLossCurve  () { return {}; }
+    virtual ABSample            getABSample       () { return {}; }
     virtual std::vector<std::vector<float>>
-                                getDeltaWHeatmap  (int numLayers, int numComponents) = 0;
+                                getDeltaWHeatmap  ([[maybe_unused]] int numLayers, [[maybe_unused]] int numComponents) { return {}; }
     virtual std::vector<std::string>
-                                getDeltaWComponentNames() = 0;
+                                getDeltaWComponentNames() { return {}; }
 
     // ── Datasets workspace ───────────────────────────────────────────────
-    virtual std::vector<DatasetSummary> getDatasets       ()                                 = 0;
-    virtual DatasetSample               getSample         (std::string_view dataset, int id) = 0;
-    virtual DatasetSampleStats          getSampleStats    (std::string_view dataset, int id) = 0;
-    virtual DatasetDistribution         getDatasetDistribution(std::string_view dataset)     = 0;
-    virtual std::vector<float>          getTokenIds       (std::string_view dataset, int id, int n) = 0;
+    virtual std::vector<DatasetSummary> getDatasets       () { return {}; }
+    virtual DatasetSample               getSample         ([[maybe_unused]] std::string_view dataset, [[maybe_unused]] int id) { return {}; }
+    virtual DatasetSampleStats          getSampleStats    ([[maybe_unused]] std::string_view dataset, [[maybe_unused]] int id) { return {}; }
+    virtual DatasetDistribution         getDatasetDistribution([[maybe_unused]] std::string_view dataset) { return {}; }
+    virtual std::vector<float>          getTokenIds       ([[maybe_unused]] std::string_view dataset, [[maybe_unused]] int id, [[maybe_unused]] int n) { return {}; }
 
     // ── Raw tensors workspace ────────────────────────────────────────────
-    virtual std::vector<TensorMeta> getStateDict    ()                                 = 0;
-    virtual TensorMeta              getTensorMeta   (std::string_view name)            = 0;
-    virtual std::vector<float>      getWeightSlice  (std::string_view name, int offset, int n) = 0;
-    virtual std::vector<int>        getWeightHistogram(std::string_view name, int bins) = 0;
-    virtual TensorStats             getTensorStats  (std::string_view name)            = 0;
-    virtual std::vector<float>      getSingularValues(std::string_view name, int k)    = 0;
+    // Defaults walk view().tensors so any backend that populates the
+    // TensorRegistry gets state-dict enumeration for free (see
+    // model_view.cpp for the definitions).  Backends with no tensor
+    // registry inherit the empty result.
+    virtual std::vector<TensorMeta> getStateDict    ();
+    virtual TensorMeta              getTensorMeta   (std::string_view name);
+    virtual std::vector<float>      getWeightSlice  ([[maybe_unused]] std::string_view name, [[maybe_unused]] int offset, [[maybe_unused]] int n) { return {}; }
+    virtual std::vector<int>        getWeightHistogram([[maybe_unused]] std::string_view name, [[maybe_unused]] int bins) { return {}; }
+    virtual TensorStats             getTensorStats  ([[maybe_unused]] std::string_view name) { return {}; }
+    virtual std::vector<float>      getSingularValues([[maybe_unused]] std::string_view name, [[maybe_unused]] int k) { return {}; }
     virtual std::vector<std::vector<float>>
-                                    getTensorSlice2D(std::string_view name,
-                                                     int axis0, int axis1, int rows, int cols) = 0;
+                                    getTensorSlice2D([[maybe_unused]] std::string_view name,
+                                                     [[maybe_unused]] int axis0, [[maybe_unused]] int axis1, [[maybe_unused]] int rows, [[maybe_unused]] int cols) { return {}; }
     virtual std::vector<std::vector<float>>
-                                    getDiffSlice2D  (std::string_view name, int rows, int cols) = 0;
-    virtual DiffStats               getDiffStats    (std::string_view name)            = 0;
+                                    getDiffSlice2D  ([[maybe_unused]] std::string_view name, [[maybe_unused]] int rows, [[maybe_unused]] int cols) { return {}; }
+    virtual DiffStats               getDiffStats    ([[maybe_unused]] std::string_view name) { return {}; }
 
     // ── Engine / runtime ─────────────────────────────────────────────────
-    virtual EngineMetrics         getEngineMetrics() = 0;
+    virtual EngineMetrics         getEngineMetrics() { return {}; }
 
     // ── Engine log bridge ────────────────────────────────────────────────
     // Pulled once per frame.  Implementations should return any log
     // lines the engine has emitted since the last call (FIFO ring is
     // typical) and clear their internal buffer.  MockModel returns {}.
-    virtual std::vector<LogEntry> drainEngineLogs() = 0;
+    virtual std::vector<LogEntry> drainEngineLogs() { return {}; }
 };
 
-// MockModel — see model/mock_model.cpp.  When the build-time flag
-// `LLOB_USE_MOCK_DATA` is undefined, every method returns the no-data
-// sentinel for its type (empty vector / NaN / "").  This makes it
-// impossible to ship a release build that silently shows fake data — the
-// UI either has a real backend wired up or it shows blank panels.
+// MockModel — opt-in screenshot/demo backend (mock_model.cpp).  When the
+// build-time flag `LLOB_USE_MOCK_DATA` is defined, every override emits
+// deterministic synthetic data so the UI can be exercised without a real
+// model wired up.  When the flag is undefined, MockModel inherits Model's
+// empty defaults like any other backend.
+//
+// NOTE: concrete backends (HFProxyEngine, GgufInspectorEngine,
+// LlamaCppEngine, ...) inherit Model, NOT MockModel.  Inheriting MockModel
+// previously meant unimplemented getters silently emitted mock data —
+// honest empties via Model are the new contract.  MockModel is only
+// instantiated when the user explicitly selects `LLOB_BACKEND=mock`.
 struct MockModel : Model {
 #define DECL_OVERRIDE(ret, sig) ret sig override
     DECL_OVERRIDE(ModelInfo,                      getModelInfo());
@@ -641,6 +778,22 @@ struct MockModel : Model {
     }
     void saveProbe(std::string_view) override {}
     void exportSnapshot(std::string_view) override {}
+
+    // Unified data structure.  MockModel owns one ModelView; populator
+    // lives in mock_model.cpp (Mulberry32-seeded topology + a synthetic
+    // TensorRegistry that gives the raw-tensors workspace something to
+    // enumerate even before a real backend is wired).
+    const ModelView& view() const override;
+    Capabilities     getCapabilities() const override;
+
+    MockModel();
+    ~MockModel() override;
+    MockModel(const MockModel&)            = delete;
+    MockModel& operator=(const MockModel&) = delete;
+
+private:
+    struct State;
+    std::unique_ptr<State> m_state;
 };
 
 }  // namespace llmengine

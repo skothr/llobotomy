@@ -5,6 +5,9 @@
 // model.hpp, and the UI shows "no data" placeholders instead.
 
 #include "llm_engine/model.hpp"
+#include "llm_engine/model_view.hpp"
+#include "llm_engine/tensor_handle.hpp"
+#include "llm_engine/tensor_source.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -15,6 +18,191 @@
 #include <string>
 
 namespace llmengine {
+
+// ── MockModel::State — holds the ModelView the mock returns ───────────────
+// PIMPL so model.hpp can stay clean of <atomic> / <unordered_map> etc.
+// Construction populates a TinyLlama-shaped topology + a small synthetic
+// TensorRegistry so the raw-tensors workspace has something to enumerate
+// even though every per-method getter still computes its own mock data
+// inline below.  The two paths coexist intentionally: backends migrating
+// to the ModelView substrate can read from m_view while existing UI
+// callers keep hitting the virtual getters.
+struct MockModel::State {
+    ModelView view;
+};
+
+namespace {
+
+#if LLOB_USE_MOCK_DATA
+// Build a synthetic state-dict for a TinyLlama-shaped model.  Names match
+// the existing MockModel::getStateDict() output (which the raw-tensors
+// workspace already renders) so the typed view stays consistent with the
+// per-DTO path.
+//
+// Each handle plugs into a Mulberry32Source seeded by a hash of the
+// tensor name — so the byte stream is deterministic AND distinct per
+// tensor, with no upfront memory cost (bytes are computed on each
+// pread()).  Architecturally identical to a real-backend handle: a
+// future GgufInspectorEngine plugs in a GgufSource the same way.
+std::uint32_t name_seed(std::string_view name) {
+    std::uint32_t h = 2166136261u;
+    for (char c : name) { h ^= static_cast<std::uint8_t>(c); h *= 16777619u; }
+    return h | 1u;     // never zero — keeps PRNG transitions lively
+}
+
+void populateMockTensors(TensorRegistry& reg) {
+    auto add = [&](std::string name, std::vector<std::int64_t> shape, DType dt) {
+        std::size_t n = 1;
+        for (auto d : shape) n *= static_cast<std::size_t>(d > 0 ? d : 0);
+        const std::size_t bpe = dtype_element_bytes(dt);
+        const std::size_t bytes = n * bpe;
+        TensorHandle h;
+        h.name        = name;
+        h.dtype       = dt;
+        h.shape       = std::move(shape);
+        h.byte_offset = 0;
+        h.byte_length = bytes;
+        h.source      = std::make_shared<Mulberry32Source>(name_seed(name), bytes);
+        reg.insert(std::move(h));
+    };
+    constexpr int kLayers = 22;
+    constexpr int kDModel = 2048;
+    constexpr int kDMlp   = 5632;
+    constexpr int kVocab  = 32000;
+    add("tok_embeddings.weight", {kVocab, kDModel}, DType::F16);
+    for (int L = 0; L < kLayers; ++L) {
+        const std::string p = "blocks." + std::to_string(L) + ".";
+        add(p + "attn.W_Q.weight", {kDModel, kDModel}, DType::F16);
+        add(p + "attn.W_K.weight", {kDModel / 8, kDModel}, DType::F16);
+        add(p + "attn.W_V.weight", {kDModel / 8, kDModel}, DType::F16);
+        add(p + "attn.W_O.weight", {kDModel, kDModel}, DType::F16);
+        add(p + "mlp.W_gate.weight", {kDMlp,   kDModel}, DType::F16);
+        add(p + "mlp.W_up.weight",   {kDMlp,   kDModel}, DType::F16);
+        add(p + "mlp.W_down.weight", {kDModel, kDMlp},   DType::F16);
+        add(p + "ln1.weight", {kDModel}, DType::F16);
+        add(p + "ln2.weight", {kDModel}, DType::F16);
+    }
+    add("ln_f.weight", {kDModel}, DType::F16);
+    add("lm_head.weight", {kVocab, kDModel}, DType::F16);
+}
+
+// MockModel tokenizer — deterministic word-level split for encode, "tok_N"
+// string for decode.  Doesn't pretend to be a real BPE; the point is that
+// the substrate's encode/decode slots are wired end-to-end with the same
+// std::function-based ABI a real tokenizer (HF tokenizers, sentencepiece,
+// llama.cpp) will use.  A test verifies encode → decode round-trip.
+std::vector<TokenId> mock_encode(std::string_view text) {
+    std::vector<TokenId> out;
+    // Whitespace-split + a tiny hash → TokenId.  Each unique word gets
+    // a stable id (the hash is deterministic) but collisions are
+    // possible — fine for a mock; surfaces the API shape, not vocab.
+    std::size_t i = 0;
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i >= text.size()) break;
+        std::size_t j = i;
+        while (j < text.size() && !std::isspace(static_cast<unsigned char>(text[j]))) ++j;
+        std::uint32_t h = 2166136261u;
+        for (std::size_t k = i; k < j; ++k) {
+            h ^= static_cast<std::uint8_t>(text[k]);
+            h *= 16777619u;
+        }
+        // Clamp into mock vocab range (32000) so ids look plausible.
+        out.push_back(static_cast<TokenId>(h % 32000u));
+        i = j;
+    }
+    return out;
+}
+
+std::string mock_decode(TokenId id) {
+    // Two special-cased ids — match topology.bosToken / eosToken so a
+    // round-trip across "<s>" hits the BOS path.
+    if (id == 1) return "<s>";
+    if (id == 2) return "</s>";
+    return "tok_" + std::to_string(id);
+}
+
+void populateMockView(ModelView& v) {
+    v.provenance = {
+        .path         = "mock://tinyllama-1.1b",
+        .format       = "mock",
+        .content_hash = "",
+        .source_label = "MockModel (Mulberry32 fixture)",
+    };
+    v.topology = {
+        .name         = "mock/tinyllama-1.1b",
+        .nLayers      = 22,
+        .nHeads       = 32,
+        .nKvHeads     = 4,
+        .dModel       = 2048,
+        .dHead        = 64,
+        .dMlp         = 5632,
+        .vocab        = 32000,
+        .maxPos       = 2048,
+        .ropeTheta    = 10000.0f,
+        .totalParams  = 1100048384,
+        .chatTemplate = "<|user|>\n{prompt}</s>\n<|assistant|>\n",
+        .bosToken     = "<s>",
+        .eosToken     = "</s>",
+    };
+    populateMockTensors(v.tensors);
+
+    // Tokenizer surface — wires the std::function slots that real
+    // backends fill from their runtime tokenizer.  Same shape as the
+    // HF / sentencepiece / llama.cpp wiring; just synthetic.
+    v.tokenizer.bos_token     = "<s>";
+    v.tokenizer.eos_token     = "</s>";
+    v.tokenizer.pad_token     = "<pad>";
+    v.tokenizer.chat_template = v.topology.chatTemplate;
+    v.tokenizer.encode        = mock_encode;
+    v.tokenizer.decode        = mock_decode;
+
+    // Capability snapshot for the path API (`capabilities/has_X`).  The
+    // virtual getCapabilities() retains its independent answer; this
+    // mirror exists so path-API consumers don't need a Model* — only the
+    // ModelView reference.
+    v.capabilities = Model::Capabilities{
+        .has_topology      = true,
+        .has_tokenizer     = true,
+        .has_state_dict    = true,
+        .has_attention     = true,
+        .has_residual      = true,
+        .has_logit_lens    = true,
+        .has_token_stream  = false,
+        .has_captures      = true,
+        .has_intervention  = false,
+        .has_weight_deltas = false,
+        .has_training      = true,
+    };
+}
+#endif  // LLOB_USE_MOCK_DATA
+
+}  // namespace
+
+MockModel::MockModel() : m_state(std::make_unique<State>()) {
+#if LLOB_USE_MOCK_DATA
+    populateMockView(m_state->view);
+#endif
+}
+
+MockModel::~MockModel() = default;
+
+const ModelView& MockModel::view() const {
+    return m_state->view;
+}
+
+Model::Capabilities MockModel::getCapabilities() const {
+#if LLOB_USE_MOCK_DATA
+    // Mirror of the populated view.capabilities — kept in sync at
+    // construction time.  The virtual getter exists for callers that
+    // hold a `Model&` without going through view().
+    return m_state->view.capabilities;
+#else
+    return {};
+#endif
+}
+
+// ─── existing per-method getters (unchanged from here on) ────────────────
 
 namespace {
 
@@ -725,26 +913,26 @@ std::vector<float> MockModel::getTokenIds([[maybe_unused]] std::string_view data
 
 std::vector<TensorMeta> MockModel::getStateDict() {
 #if LLOB_USE_MOCK_DATA
-    auto tm = [](const char* name, std::vector<int> shape, std::int64_t bytes) {
-        TensorMeta m; m.name = name; m.dtype = "fp16";
-        m.shape = std::move(shape); m.stride = { m.shape.empty() ? 1 : m.shape.back(), 1 };
-        m.contiguous = true; m.device = "cuda:0"; m.size_bytes = bytes;
-        return m;
-    };
-    return {
-        tm("embed.weight",                {32000, 384}, 24'576'000),
-        tm("pos_embed.freqs",             {2048, 64},     262'144),
-        tm("blocks.8.attn.W_Q.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_K.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_V.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.W_O.weight",    {384, 384},     294'912),
-        tm("blocks.8.attn.b_Q",           {384},                768),
-        tm("blocks.8.mlp.W_in.weight",    {384, 1536},  1'179'648),
-        tm("blocks.8.mlp.W_out.weight",   {1536, 384},  1'179'648),
-        tm("blocks.8.norm1.weight",       {384},                768),
-        tm("final_norm.weight",           {384},                768),
-        tm("unembed.weight",              {384, 32000}, 24'576'000),
-    };
+    // Single source of truth: walk view.tensors (populated by
+    // populateMockTensors at construction).  Previously this function
+    // hard-coded its own divergent name list — the test
+    // test_mock_model_compat caught the drift once LLOB_USE_MOCK_DATA
+    // was propagated to test binaries (commit history).
+    std::vector<TensorMeta> out;
+    out.reserve(m_state->view.tensors.size());
+    for (const auto& h : m_state->view.tensors.all) {
+        TensorMeta m;
+        m.name  = h.name;
+        m.dtype = dtype_name(h.dtype);
+        m.shape.reserve(h.shape.size());
+        for (auto d : h.shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h.contiguous;
+        m.device      = "cuda:0";
+        m.size_bytes  = static_cast<std::int64_t>(h.byte_length);
+        out.push_back(std::move(m));
+    }
+    return out;
 #else
     return {};
 #endif
@@ -752,7 +940,19 @@ std::vector<TensorMeta> MockModel::getStateDict() {
 
 TensorMeta MockModel::getTensorMeta([[maybe_unused]] std::string_view name) {
 #if LLOB_USE_MOCK_DATA
-    for (const auto& m : getStateDict()) if (m.name == name) return m;
+    // Same single-source-of-truth: look up in the registry directly.
+    if (const TensorHandle* h = m_state->view.tensors.find(name)) {
+        TensorMeta m;
+        m.name  = h->name;
+        m.dtype = dtype_name(h->dtype);
+        m.shape.reserve(h->shape.size());
+        for (auto d : h->shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h->contiguous;
+        m.device      = "cuda:0";
+        m.size_bytes  = static_cast<std::int64_t>(h->byte_length);
+        return m;
+    }
     TensorMeta fallback; fallback.name = std::string(name);
     return fallback;
 #else
