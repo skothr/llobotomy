@@ -10,10 +10,10 @@
 //   GgufSource    (gguf_source.cpp)  — mmap/pread on the data section
 //
 // All "live" getters (getAttentionPattern, getMlpFeatures, …) inherit
-// from MockModel without override.  The engine's only real overrides are
-// view(), getCapabilities(), getModelInfo(), loadCheckpoint(), and
-// unloadCheckpoint().  This keeps GgufInspectorEngine.cpp to ~200 lines
-// while the entire Model interface is satisfied.
+// Model's defaulted empties — this engine is a weight inspector, not an
+// inference runtime, so per-frame samplers honestly return no data.  The
+// engine's only real overrides are view(), getCapabilities(),
+// getModelInfo(), loadCheckpoint(), and unloadCheckpoint().
 
 #include "llm_engine/gguf_inspector_engine.hpp"
 #include "llm_engine/gguf_parser.hpp"

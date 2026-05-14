@@ -23,9 +23,9 @@
 //
 // Implementation pattern:
 //   PIMPL with a ModelView member.  loadCheckpoint() is synchronous (the
-//   header parse is fast; no heavy compute).  All "live" per-method getters
-//   delegate to MockModel::method() (inherited) — they return mock data
-//   when LLOB_USE_MOCK_DATA is on, sentinels otherwise.  Only view() and
+//   header parse is fast; no heavy compute).  Inherits Model directly, so
+//   any per-frame getter we don't override returns the no-data sentinel
+//   honestly — never silently emits mock data.  Only view() and
 //   getCapabilities() are overridden to return the real file-backed data.
 
 #include "llm_engine/model.hpp"
@@ -36,7 +36,7 @@
 
 namespace llmengine {
 
-class GgufInspectorEngine final : public MockModel {
+class GgufInspectorEngine final : public Model {
 public:
     GgufInspectorEngine();
     ~GgufInspectorEngine() override;

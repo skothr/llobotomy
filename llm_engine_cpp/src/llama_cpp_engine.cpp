@@ -260,7 +260,23 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
             return std::string(buf, static_cast<std::size_t>(n));
         };
 
-        m_impl->view.capabilities = getCapabilities();
+        // Capabilities reflect what's actually wired in this engine
+        // iteration.  Set explicitly post-load (rather than calling the
+        // virtual getter) so the engine starts at all-false until a
+        // checkpoint is loaded — honest contract for the UI.
+        m_impl->view.capabilities = Capabilities{
+            .has_topology     = true,
+            .has_tokenizer    = true,
+            .has_state_dict   = false,   // LlamaCppSource for view.tensors still TODO
+            .has_attention    = true,
+            .has_residual     = true,    // cb_eval captures l_out-{N}
+            .has_logit_lens   = true,    // logits captured post-decode
+            .has_token_stream = false,   // future — needs llama_decode loop
+            .has_captures     = true,
+            .has_intervention = false,   // future — needs custom forward
+            .has_weight_deltas= false,
+            .has_training     = false,
+        };
     }
 
     m_impl->setProgress({});
@@ -447,19 +463,12 @@ std::vector<LogitDist> LlamaCppEngine::getOutputLogits(int k)
 
 Model::Capabilities LlamaCppEngine::getCapabilities() const
 {
-    return Capabilities{
-        .has_topology     = true,
-        .has_tokenizer    = true,
-        .has_state_dict   = false,   // LlamaCppSource for view.tensors still TODO
-        .has_attention    = true,
-        .has_residual     = true,    // cb_eval captures l_out-{N}
-        .has_logit_lens   = true,    // logits captured post-decode
-        .has_token_stream = false,   // future — needs llama_decode loop
-        .has_captures     = true,
-        .has_intervention = false,   // future — needs custom forward
-        .has_weight_deltas= false,
-        .has_training     = false,
-    };
+    // Honest contract: mirror view.capabilities, which is default-false
+    // (all bits cleared by ModelView::clear() on construction and on
+    // unloadCheckpoint) until loadCheckpoint succeeds and populates it.
+    // Same pattern as GgufInspectorEngine.
+    std::lock_guard<std::mutex> lk(m_impl->mu);
+    return m_impl->view.capabilities;
 }
 
 // ── view ──────────────────────────────────────────────────────────────────────

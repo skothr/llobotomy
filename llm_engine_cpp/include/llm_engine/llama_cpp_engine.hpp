@@ -28,7 +28,7 @@
 
 namespace llmengine {
 
-class LlamaCppEngine : public MockModel {
+class LlamaCppEngine : public Model {
 public:
     LlamaCppEngine();
     ~LlamaCppEngine() override;

@@ -15,12 +15,12 @@
 //   - getResidualSummary(L)      → GET  /api/sessions/{n}/capture/{h}/residual
 //   - getQKVStats(L,H,T)         → GET  /api/sessions/{n}/capture/{h}/qkv
 //
-// Every other Model::* method falls through to MockModel's default — which
-// returns the no-data sentinel for the type when LLOB_USE_MOCK_DATA=OFF
-// (release / real-backend builds), or deterministic mock data when ON
-// (development builds).  The latter is useful for incrementally validating
-// the wiring: load a real model and confirm topology populates while
-// per-frame samplers continue to show familiar mock data.
+// Every other Model::* method falls through to Model's default — which
+// returns the no-data sentinel for the type (empty vector / NaN / "").
+// This is honest: a real backend that hasn't wired a particular getter
+// shows an empty panel, never mock data that could be mistaken for real
+// output.  Pick LLOB_BACKEND=mock explicitly if you want the screenshot
+// data path.
 //
 // Threading: setActivePrompt pushes a capture job to the SamplerWorker
 // thread (already present for heartbeat).  Getters run on the UI thread
@@ -41,7 +41,7 @@
 
 namespace llmengine {
 
-class HFProxyEngine : public MockModel {
+class HFProxyEngine : public Model {
 public:
     // base_url example: "http://127.0.0.1:8000".  No trailing slash.
     explicit HFProxyEngine(std::string base_url);
@@ -96,8 +96,8 @@ public:
     // getOutputLogits: opens WS /ws/sessions/{n}/generate, streams tokens,
     // returns top-k from the last data frame.  Synchronous similarly.
     //
-    // Both override the MockModel no-ops that return {} when no backend is
-    // wired.  On WS connection failure they log a warn and return {}.
+    // Both override Model's defaulted-empty getters.  On WS connection
+    // failure they log a warn and return {}.
     std::vector<LogitLensRow> getLogitLensTrajectory(int token, int kLayers) override;
     std::vector<LogitDist>    getOutputLogits       (int k)                  override;
 

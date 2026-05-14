@@ -69,17 +69,24 @@ void test_tokens_before_load()
     REQUIRE(toks.empty(), "getCurrentTokens before load returns empty");
 }
 
-// ── Test 5: capabilities bitmap ──────────────────────────────────────────────
+// ── Test 5: capabilities are honest about load state ─────────────────────────
+// Before loadCheckpoint succeeds, every capability must be false — the
+// backend has nothing to offer.  Pre-asserting truth was the same kind of
+// dishonesty as silent mock fallback (see test_no_mock_leak.cpp for the
+// full contract).  Post-load capability advertisement (when LLAMA_CPP is
+// compiled in and a real model loads) is exercised in test_llama_cpp_real.
 void test_capabilities()
 {
     llmengine::LlamaCppEngine engine;
     auto caps = engine.getCapabilities();
-    REQUIRE(caps.has_attention,  "has_attention advertised");
-    REQUIRE(caps.has_residual,   "has_residual advertised (Wave D extensions)");
-    REQUIRE(caps.has_logit_lens, "has_logit_lens advertised (Wave D extensions — logits captured)");
-    REQUIRE(caps.has_topology,   "has_topology advertised");
-    REQUIRE(!caps.has_intervention, "has_intervention not advertised");
-    REQUIRE(!caps.has_token_stream, "has_token_stream not advertised");
+    REQUIRE(!caps.has_topology,     "has_topology false before load");
+    REQUIRE(!caps.has_tokenizer,    "has_tokenizer false before load");
+    REQUIRE(!caps.has_attention,    "has_attention false before load");
+    REQUIRE(!caps.has_residual,     "has_residual false before load");
+    REQUIRE(!caps.has_logit_lens,   "has_logit_lens false before load");
+    REQUIRE(!caps.has_captures,     "has_captures false before load");
+    REQUIRE(!caps.has_intervention, "has_intervention false before load (future work)");
+    REQUIRE(!caps.has_token_stream, "has_token_stream false before load (future work)");
 }
 
 // ── Test 6: view() topology clears after unload ───────────────────────────────

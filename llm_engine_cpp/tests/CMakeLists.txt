@@ -49,6 +49,14 @@ add_smoke_test(NAME derived_cache_threading SOURCES test_derived_cache_threading
 # without crashing.
 add_smoke_test(NAME path_api SOURCES test_path_api.cpp)
 
+# Honest-empty contract — concrete backends must never silently emit
+# MockModel synthetic data when a getter isn't overridden.  This is the
+# regression bar for the "inherit Model, not MockModel" refactor; under
+# LLOB_USE_MOCK_DATA=ON the test catches any backend that reverts to
+# inheriting MockModel (synthetic vectors would re-appear).  Under =OFF
+# it trivially passes.  Always-on smoke tier.
+add_smoke_test(NAME no_mock_leak SOURCES test_no_mock_leak.cpp)
+
 # ── Wave C — GgufInspectorEngine ──────────────────────────────────────────
 # GGUF parser — hand-constructed binary buffers, no real model file required.
 add_smoke_test(NAME gguf_parser       SOURCES test_gguf_parser.cpp)
