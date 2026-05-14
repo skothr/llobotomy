@@ -195,9 +195,18 @@ struct ProbeEntry {
 struct SteeringConfig {
     bool        active   = false;
     std::string source;          // "\"refusal\" prompts (n=128)"
-    std::string layer;           // "L08.resid_post"
+    std::string layer;           // "L08.resid_post" — backends parse the
+                                 // leading integer (with or without the
+                                 // "L" prefix) to identify the target layer.
     float       alpha    = kNoFloat;
     float       cos_sim  = kNoFloat;
+
+    // The steering direction vector itself.  Length should equal the
+    // target backend's d_model; backends that need a different shape
+    // can ignore + log a warn.  Empty when active==false or when the
+    // caller is recording metadata-only (UI may show "intent" without
+    // having computed the vector yet).
+    std::vector<float> direction;
 };
 
 // Sampler configuration consumed by Model::setSamplerConfig.  Describes

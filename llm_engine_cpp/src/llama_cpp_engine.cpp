@@ -93,6 +93,11 @@ struct LlamaCppEngine::Impl {
     SamplerConfig sampler_cfg{};
     int           max_generation_tokens = 24;
 
+    // Component ablations — parallel set to ablated_heads, but for
+    // whole-component zeroing (attn_out or ffn_out at a given layer).
+    // Snapshotted into LlamaCaptureCtx::ablated_components per decode.
+    std::set<std::pair<int, std::string>> ablated_components;
+
     // ── Lifecycle ──────────────────────────────────────────────────────
     Impl() = default;
 
@@ -393,6 +398,17 @@ void LlamaCppEngine::setAblation(
         head_refs.push_back(*parsed);
     }
 
+    // Translate ComponentRef::component strings → llama.cpp compute-graph
+    // basenames (cb_eval observes "attn_out-{L}" / "ffn_out-{L}").
+    // Accepts the common UI/canonical aliases ("attn", "mlp", "ffn").
+    // Unknown component names are recorded into view.surgery for honest
+    // reporting but skipped in the cb_eval set — logged as a warn.
+    auto component_to_basename = [](std::string_view comp) -> std::string {
+        if (comp == "attn" || comp == "attn_out") return "attn_out";
+        if (comp == "mlp"  || comp == "ffn" || comp == "ffn_out") return "ffn_out";
+        return {};  // unrecognised
+    };
+    std::set<std::pair<int, std::string>> new_components;
     std::vector<ComponentRef> comp_refs;
     comp_refs.reserve(component_canonical.size());
     for (const auto& s : component_canonical) {
@@ -403,20 +419,21 @@ void LlamaCppEngine::setAblation(
             continue;
         }
         comp_refs.push_back(*parsed);
-    }
-
-    if (!comp_refs.empty()) {
-        // Component ablation isn't wired into cb_eval yet — record into
-        // view.surgery for the path API + UI but log warn so users know
-        // the forward pass won't reflect it until that's implemented.
-        m_impl->pushLog(Severity::Warn,
-            "setAblation: component ablation recorded but NOT applied "
-            "to forward pass yet (only head ablation is wired)");
+        std::string basename = component_to_basename(parsed->component);
+        if (basename.empty()) {
+            m_impl->pushLog(Severity::Warn,
+                "setAblation: component '" + std::string(parsed->component) +
+                "' has no llama.cpp tensor mapping; recorded in view.surgery "
+                "but won't affect forward pass");
+            continue;
+        }
+        new_components.insert({parsed->layer, std::move(basename)});
     }
 
     {
         std::lock_guard<std::mutex> lk(m_impl->mu);
-        m_impl->ablated_heads = std::move(new_heads);
+        m_impl->ablated_heads      = std::move(new_heads);
+        m_impl->ablated_components = std::move(new_components);
         m_impl->view.surgery.ablated_heads      = std::move(head_refs);
         m_impl->view.surgery.ablated_components = std::move(comp_refs);
     }
@@ -424,13 +441,11 @@ void LlamaCppEngine::setAblation(
 
 void LlamaCppEngine::setSteering(const SteeringConfig& cfg)
 {
-    // Steering not yet wired into cb_eval — would require identifying
-    // the target layer's residual stream tensor (`l_out-{L}`) and adding
-    // a fixed-direction vector after each step.  Record into view.surgery
-    // for honest reporting; log warn so users know it's a no-op.
-    m_impl->pushLog(Severity::Warn,
-        "setSteering: recorded into view.surgery but NOT applied to "
-        "forward pass yet (intervention iteration covers head ablation only)");
+    // Steering is now wired into cb_eval: when the target l_out-{N}
+    // tensor flows, alpha * direction is added uniformly across token
+    // positions via ggml_backend_tensor_set write-back.  No-op when
+    // !active or direction is empty (UI metadata-only).  Direction
+    // length should equal d_model; cb_eval logs+skips on mismatch.
     std::lock_guard<std::mutex> lk(m_impl->mu);
     m_impl->view.surgery.steering = cfg;
 }
@@ -630,6 +645,41 @@ Model::Progress LlamaCppEngine::getProgress() const
     return m_impl->progress;
 }
 
+// ── getEngineMetrics ──────────────────────────────────────────────────────────
+
+EngineMetrics LlamaCppEngine::getEngineMetrics()
+{
+    EngineMetrics em;
+#ifdef LLM_ENGINE_HAVE_LLAMA_CPP
+    // Walk all registered ggml backends, find the first GPU device,
+    // query its memory.  Covers CUDA, ROCm, Metal — anything ggml
+    // recognises as GPU.  When no GPU is present the fields stay
+    // sentinel.
+    const std::size_t n_devs = ggml_backend_dev_count();
+    for (std::size_t i = 0; i < n_devs; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) continue;
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) continue;
+        std::size_t free_bytes = 0, total_bytes = 0;
+        ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
+        constexpr double GB = 1024.0 * 1024.0 * 1024.0;
+        em.cuda_mem_total_GB = static_cast<float>(double(total_bytes) / GB);
+        em.cuda_mem_used_GB  = static_cast<float>(
+            double(total_bytes - free_bytes) / GB);
+
+        const char* dev_name = ggml_backend_dev_name(dev);
+        if (dev_name) em.device = dev_name;
+        break;
+    }
+    // dtype reflects the loaded checkpoint's quant — peek at view.topology
+    // for the model file's reported format (set during loadCheckpoint via
+    // provenance.format which is just "llama_cpp").  Without per-tensor
+    // dtype access through llama.cpp's public API we leave dtype "" until
+    // a future iteration plumbs it from the GGUF parse.
+#endif
+    return em;
+}
+
 
 // ─── Worker thread ────────────────────────────────────────────────────────────
 
@@ -697,9 +747,27 @@ void LlamaCppEngine::Impl::workerRun()
         int max_gen_snap = 24;
         {
             std::lock_guard<std::mutex> lk(mu);
-            cap_ctx.ablated_heads = ablated_heads;
-            cap_ctx.sampler_cfg   = sampler_cfg;
-            max_gen_snap          = max_generation_tokens;
+            cap_ctx.ablated_heads      = ablated_heads;
+            cap_ctx.ablated_components = ablated_components;
+            cap_ctx.sampler_cfg        = sampler_cfg;
+            cap_ctx.steering           = view.surgery.steering;
+            max_gen_snap               = max_generation_tokens;
+        }
+        // Pre-parse the steering layer string ("L08.resid_post" or "8")
+        // into an integer once per decode so cb_eval's hot path is cheap.
+        cap_ctx.steering_layer = -1;
+        if (cap_ctx.steering.active && !cap_ctx.steering.direction.empty()) {
+            const std::string& s = cap_ctx.steering.layer;
+            std::size_t p = 0;
+            if (p < s.size() && (s[p] == 'L' || s[p] == 'l')) ++p;
+            int layer = 0;
+            bool any  = false;
+            while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
+                layer = layer * 10 + (s[p] - '0');
+                ++p;
+                any = true;
+            }
+            if (any) cap_ctx.steering_layer = layer;
         }
 
         // Decode token strings for the bundle.
