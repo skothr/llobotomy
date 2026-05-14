@@ -1,4 +1,5 @@
 #include "llm_engine/model_view.hpp"
+#include "llm_engine/tensor_source.hpp"
 
 #include <charconv>
 #include <string>
@@ -189,6 +190,50 @@ void ModelView::clear() {
     surgery      = {};
     derived.clear();
     capabilities = {};
+}
+
+// ── Model defaults that walk view().tensors ─────────────────────────────────
+// Defined here (not inline in model.hpp) because they touch TensorHandle and
+// ModelView types — model.hpp forward-declares ModelView to keep the header
+// layering clean.  Backends that populate view.tensors (Gguf, LlamaCpp) get
+// these for free; backends with empty tensors return the empty result.
+
+std::vector<TensorMeta> Model::getStateDict() {
+    const auto& reg = view().tensors;
+    std::vector<TensorMeta> out;
+    out.reserve(reg.size());
+    for (const auto& h : reg.all) {
+        TensorMeta m;
+        m.name  = h.name;
+        m.dtype = dtype_name(h.dtype);
+        m.shape.reserve(h.shape.size());
+        for (auto d : h.shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h.contiguous;
+        m.device      = "";
+        m.size_bytes  = static_cast<std::int64_t>(h.byte_length);
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+TensorMeta Model::getTensorMeta(std::string_view name) {
+    const auto& reg = view().tensors;
+    if (const TensorHandle* h = reg.find(name)) {
+        TensorMeta m;
+        m.name  = h->name;
+        m.dtype = dtype_name(h->dtype);
+        m.shape.reserve(h->shape.size());
+        for (auto d : h->shape) m.shape.push_back(static_cast<int>(d));
+        m.stride      = { m.shape.empty() ? 1 : m.shape.back(), 1 };
+        m.contiguous  = h->contiguous;
+        m.device      = "";
+        m.size_bytes  = static_cast<std::int64_t>(h->byte_length);
+        return m;
+    }
+    TensorMeta fallback;
+    fallback.name = std::string(name);
+    return fallback;
 }
 
 }  // namespace llmengine

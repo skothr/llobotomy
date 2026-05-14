@@ -654,8 +654,12 @@ struct Model {
     virtual std::vector<float>          getTokenIds       ([[maybe_unused]] std::string_view dataset, [[maybe_unused]] int id, [[maybe_unused]] int n) { return {}; }
 
     // ── Raw tensors workspace ────────────────────────────────────────────
-    virtual std::vector<TensorMeta> getStateDict    () { return {}; }
-    virtual TensorMeta              getTensorMeta   ([[maybe_unused]] std::string_view name) { return {}; }
+    // Defaults walk view().tensors so any backend that populates the
+    // TensorRegistry gets state-dict enumeration for free (see
+    // model_view.cpp for the definitions).  Backends with no tensor
+    // registry inherit the empty result.
+    virtual std::vector<TensorMeta> getStateDict    ();
+    virtual TensorMeta              getTensorMeta   (std::string_view name);
     virtual std::vector<float>      getWeightSlice  ([[maybe_unused]] std::string_view name, [[maybe_unused]] int offset, [[maybe_unused]] int n) { return {}; }
     virtual std::vector<int>        getWeightHistogram([[maybe_unused]] std::string_view name, [[maybe_unused]] int bins) { return {}; }
     virtual TensorStats             getTensorStats  ([[maybe_unused]] std::string_view name) { return {}; }

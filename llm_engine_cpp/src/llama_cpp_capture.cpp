@@ -4,25 +4,41 @@
 //   llama_cpp_run_capture() — called by the engine worker thread to execute
 //                             one forward pass with activation capture.
 //
-// Capture strategy (first cut):
-//   - Only attention post-softmax tensors are captured (tensor name contains
-//     "kq_soft_max" or "kq_soft_max_ext").
-//   - Name pattern: "kq_soft_max-{L}" or "kq_soft_max_ext-{L}" where L is
-//     the layer index.  llama.cpp names these consistently across Llama-family
-//     architectures as of the pinned build.
-//   - For each such tensor: shape is [n_heads, seq, seq] (or [seq, seq] when
-//     grouped).  We copy [seq, seq] per head into an InMemoryTensorSource-
-//     backed TensorHandle stored at attention[(L, H)].
+// Capture strategy:
+//   - Attention post-softmax tensors: tensor name "kq_soft_max-{L}" (or
+//     "_ext-{L}" in newer versions).  Copy [seq, seq] per head into a
+//     TensorHandle stored at attention[(L, H)].
+//   - Residual stream: tensor name "l_out-{L}".  Copy [seq, d_model] into
+//     a TensorHandle stored at residual_post[L].
+//   - Output logits: captured post-decode via llama_get_logits() in the
+//     engine worker (not here — this file is cb_eval only).
 //
-// The callback runs inside llama_decode() on the engine thread.  It must be
-// fast and allocation-minimising.  We pre-copy to the pre-allocated
+// Architecture coverage:
+//   These tensor names are UNIVERSAL across llama.cpp's compute graphs,
+//   not Llama-family-specific.  llama.cpp's cb_eval naming convention is
+//   `ggml_format_name(cur, "%s-%d", name, il)` (llama-context.cpp:2200),
+//   and every architecture file (gpt2, gptneox, gemma, qwen2, llama,
+//   falcon, mistral, mixtral, phi, bloom, starcoder, codeshell, plamo,
+//   arctic, glm4-moe, minicpm3, nemotron-h, ...) calls the same
+//   `cb(cur, "l_out", il)` for the per-layer residual output.  The
+//   shared `build_attn_inp_kv_unified` path in llama-graph.cpp emits the
+//   same `cb(kq, "kq_soft_max", il)` regardless of architecture.
+//
+//   So no per-arch dispatch is needed for standard-attention models.
+//   Architectures with custom non-softmax attention (mamba, RWKV-style
+//   SSMs) won't emit kq_soft_max-* at all — they don't have softmax
+//   attention.  Capture for those would need fundamentally different
+//   logic (capturing state-space transitions instead of attention rows).
+//
+// The callback runs inside llama_decode() on the engine thread.  It must
+// be fast and allocation-minimising.  We pre-copy to the pre-allocated
 // LlamaCaptureCtx::bundle entries.
 //
-// Tensor name conventions from llama.cpp (may vary by arch/version):
-//   "kq_soft_max-N"      post-softmax attention weight, layer N
-//   "kq_soft_max_ext-N"  alternate naming (seen in newer versions)
-//   Shape: [n_kv_heads, n_heads/n_kv_heads, seq, seq] or [n_heads, seq, seq]
-//   We normalise to [head, seq_q, seq_k] on copy.
+// Shape conventions:
+//   kq_soft_max: [n_kv_heads, n_heads/n_kv_heads, seq, seq] or
+//                [n_heads, seq, seq] — normalised to [head, seq_q, seq_k]
+//                on copy.
+//   l_out:       [d_model, seq, 1, 1] — copied per-row as [seq, d_model].
 
 #ifdef LLM_ENGINE_HAVE_LLAMA_CPP
 

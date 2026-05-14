@@ -74,6 +74,21 @@ int main()
     auto caps = engine.getCapabilities();
     REQUIRE(caps.has_topology, "has_topology after load");
     REQUIRE(caps.has_attention, "has_attention after load");
+    REQUIRE(caps.has_state_dict, "has_state_dict after load (parallel GGUF parse)");
+
+    // ── State dict (parallel GGUF parse populates view.tensors) ───────────
+    // LlamaCppEngine doesn't get tensor enumeration from llama.cpp's public
+    // API, so it re-parses the GGUF header in parallel with the llama_model
+    // load.  Verify view.tensors is populated and TinyLlama's expected
+    // tensors are addressable.
+    const auto& tensors = engine.view().tensors;
+    REQUIRE(tensors.size() > 0, "view.tensors populated by parallel GGUF parse");
+    std::fprintf(stderr, "  state_dict: %zu tensors\n", tensors.size());
+    auto state_dict = engine.getStateDict();
+    REQUIRE(!state_dict.empty(), "getStateDict returns entries");
+    std::fprintf(stderr, "  first tensor: %s (dtype=%s)\n",
+                 state_dict.front().name.c_str(),
+                 state_dict.front().dtype.c_str());
 
     // ── Forward pass ──────────────────────────────────────────────────────
     engine.setActivePrompt("The capital of France is");

@@ -6,6 +6,8 @@
 
 #include "llm_engine/llama_cpp_engine.hpp"
 #include "llm_engine/capture.hpp"
+#include "llm_engine/gguf_parser.hpp"
+#include "llm_engine/gguf_source.hpp"
 #include "llm_engine/log.hpp"
 #include "llm_engine/model_view.hpp"
 #include "llm_engine/tensor_source.hpp"
@@ -226,6 +228,37 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
         }
     }
 
+    // Parse the GGUF header in parallel with llama.cpp's loader to expose
+    // the state_dict via view.tensors.  llama.cpp's public API doesn't
+    // enumerate loaded tensors, so we re-mmap the file ourselves via
+    // GgufSource (kernel page cache shares the pages with llama.cpp's
+    // mmap — zero extra RAM cost).  If parse fails the engine still works,
+    // just without state_dict access; has_state_dict reflects this.
+    TensorRegistry tensor_registry;
+    bool state_dict_ok = false;
+    {
+        auto hdr = parse_gguf(path_str);
+        if (!hdr) {
+            m_impl->pushLog(Severity::Warn,
+                "GGUF re-parse failed for state_dict; view.tensors will be empty");
+        } else {
+            auto source = std::make_shared<GgufSource>(path_str, hdr->data_section_offset);
+            tensor_registry.all.reserve(hdr->tensors.size());
+            for (const auto& ti : hdr->tensors) {
+                TensorHandle h;
+                h.source      = source;
+                h.name        = ti.canonical;
+                h.dtype       = ti.dtype;
+                h.shape       = ti.shape;
+                h.byte_offset = ti.byte_offset;
+                h.byte_length = ti.byte_length;
+                h.contiguous  = true;
+                tensor_registry.insert(std::move(h));
+            }
+            state_dict_ok = true;
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lk(m_impl->mu);
         m_impl->view.topology = info;
@@ -260,6 +293,8 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
             return std::string(buf, static_cast<std::size_t>(n));
         };
 
+        m_impl->view.tensors = std::move(tensor_registry);
+
         // Capabilities reflect what's actually wired in this engine
         // iteration.  Set explicitly post-load (rather than calling the
         // virtual getter) so the engine starts at all-false until a
@@ -267,7 +302,7 @@ LlamaCppEngine::loadCheckpoint(std::string_view path,
         m_impl->view.capabilities = Capabilities{
             .has_topology     = true,
             .has_tokenizer    = true,
-            .has_state_dict   = false,   // LlamaCppSource for view.tensors still TODO
+            .has_state_dict   = state_dict_ok,
             .has_attention    = true,
             .has_residual     = true,    // cb_eval captures l_out-{N}
             .has_logit_lens   = true,    // logits captured post-decode
