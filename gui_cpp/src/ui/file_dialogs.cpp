@@ -20,9 +20,15 @@ namespace llob {
 
 namespace {
 
-constexpr const char* kOpenCkptKey   = "##fd_open_ckpt";
-constexpr const char* kSaveProbeKey  = "##fd_save_probe";
-constexpr const char* kExportKey     = "##fd_export";
+// IGFD concatenates these as `title + "##" + key`. The key must NOT itself
+// start with `##` — that produces a 4+-`#` run, which trips an asymmetry
+// between ImHashStr (non-greedy on `###`) and ImHashSkipUncontributingPrefix
+// (greedy), causing `window->ID != settings->ID` in
+// WindowSettingsHandler_WriteAll and an assert on the first settings save
+// after the dialog opens.
+constexpr const char* kOpenCkptKey   = "fd_open_ckpt";
+constexpr const char* kSaveProbeKey  = "fd_save_probe";
+constexpr const char* kExportKey     = "fd_export";
 
 // Filter strings — IGFD glob syntax is "( description ){ .ext1, .ext2 }" or
 // just ".ext1,.ext2".  The .* fallback lets the user pick anything when
