@@ -1,0 +1,24 @@
+# Build trees
+build/
+build-*/
+cmake-build-*/
+llm_engine_cpp/build/
+
+# CMake / clangd
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+
+# Object files
+*.o
+*.obj
+
+# Runtime artifacts
+imgui.ini
+llobotomy.log
+.cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+
