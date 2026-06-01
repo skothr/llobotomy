@@ -18,7 +18,7 @@ If it says "MAIN CHECKOUT": **STOP. Do not edit any file.** Create a
 worktree at `.claude/worktrees/<scope>/` on its own branch first (e.g.
 via `EnterWorktree name=<scope>`). `.claude/` is gitignored.
 
-The only commits permitted directly on the default branch (`master`) in
+The only commits permitted directly on the default branch (`main`) in
 the main checkout are integration commits: merge commits (`gh pr merge`)
 or convention-establishing changes to `CLAUDE.md` / `.gitignore` itself.
 Everything else — even one-line fixes — goes through a worktree.
@@ -29,10 +29,10 @@ Everything else — even one-line fixes — goes through a worktree.
    session into it. Conventional branch prefixes: `feat/`, `fix/`,
    `refactor/`, `docs/`, `session/`.
 2. All `Edit`/`Write`/`Bash` calls now operate inside the worktree;
-   master in the main checkout is untouched. Never edit files in another
+   main in the main checkout is untouched. Never edit files in another
    session's sibling worktree (read-only inspection is fine).
 3. End: `git push -u origin <branch>`, open a PR with `gh pr create`,
-   and merge to `master` via PR. After merge, remove the worktree
+   and merge to `main` via PR. After merge, remove the worktree
    (`git worktree remove .claude/worktrees/<scope>`).
 
 ---
